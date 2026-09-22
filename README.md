@@ -61,6 +61,12 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  push:
+    # Redundant with the release trigger above -- see "The release-trigger
+    # race" below. Required, not optional, for every consumer of this
+    # reusable workflow.
+    tags:
+      - "v*"
   workflow_dispatch: {}
 
 jobs:
@@ -74,6 +80,36 @@ jobs:
       gate-commands: npm test
     secrets: inherit
 ```
+
+## The release-trigger race (read this before wiring `npm-publish.yml`)
+
+Observed for real on 2026-09-22: `fileable`'s first release after migrating
+to this reusable workflow (`v0.0.2`) never triggered a `publish` run at
+all -- not a failed run, no run whatsoever, confirmed via the Actions API
+both immediately and 15+ minutes later. `workflow_dispatch` on the same
+workflow file worked fine.
+
+Root-caused by direct A/B testing, not guessed: a fresh diagnostic release
+on a repo with no recent push fired correctly and instantly (tested on
+`spintax`); re-testing the *exact same* `fileable` release well after any
+recent push also fired correctly. The one release that failed was created
+~35 seconds after a push-triggered CI run completed on the same commit
+(the merge of the version-bump PR that preceded it). The reproducible
+pattern: **creating a `release` very soon after a push/merge to the same
+commit can cause GitHub to silently drop the `release` event** for a job
+whose entire body is `uses: <external-repo>/...@v1` -- this is specific to
+that job shape; a normal `runs-on:` job doesn't appear to have the same
+race window.
+
+Since `gh release create` (and the GitHub UI's "Create a new release")
+also creates the underlying git tag, adding a `push: tags: ['v*']` trigger
+gives every consumer's publish workflow a second, independent chance to
+fire if the `release` event is ever dropped this way. It's safe for both
+triggers to fire for the same publish: `npm-publish.yml`'s idempotent
+`npm view` pre-flight guard makes a second run a clean no-op, not a
+duplicate-publish error. **Every consumer of `npm-publish.yml` should
+include the `push: tags: ['v*']` trigger shown above, not just
+`release: types: [published]` alone.**
 
 Inputs (all optional):
 
