@@ -1,0 +1,73 @@
+name: codeql (reusable)
+
+# Reusable `workflow_call` target for the family's CodeQL scan job, factored
+# out of near-identical copies in aimatey, andbox, and
+# aimatey-middleware-andbox's .github/workflows/codeql.yml. The only real
+# variation across those three was the language/paths-ignore list (branch
+# lists varied too, but see the note below on why branches stay local to
+# the caller).
+#
+# IMPORTANT: branches are NOT an input here. A reusable workflow's own
+# `on:` triggers only fire for pushes/PRs to THIS repo (johnhenry/workflows)
+# -- they cannot make a caller repo scan its own pushes. Each consuming
+# repo keeps a thin wrapper file with its own `on: push/pull_request:
+# branches: [...]` (and the weekly `schedule:` cron) that calls this
+# workflow's `analyze` job. See this repo's README for the wrapper example.
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "CodeQL language identifier."
+        required: false
+        type: string
+        default: "javascript"
+      queries:
+        description: "CodeQL query suites to run."
+        required: false
+        type: string
+        default: "security-extended,security-and-quality"
+      paths-ignore:
+        description: >-
+          Newline-separated glob list passed to CodeQL's paths-ignore
+          config -- excludes examples/tests from security analysis since
+          they aren't production code and may contain intentional test
+          patterns.
+        required: false
+        type: string
+        default: |
+          examples/**
+          tests/**
+          **/*.test.js
+          **/*.spec.js
+          **/*.test.mjs
+          **/*.spec.mjs
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ inputs.language }}
+          queries: ${{ inputs.queries }}
+          config: |
+            paths-ignore:
+              ${{ inputs.paths-ignore }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ inputs.language }}"

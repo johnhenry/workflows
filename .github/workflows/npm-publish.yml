@@ -1,0 +1,120 @@
+name: npm-publish (reusable)
+
+# Reusable `workflow_call` target implementing the @johnhenry family's
+# single-package publish standard (see publish-npm-single/SKILL.md in
+# John's local Claude skills, and ecosystem-cohesion-plan.md section 2a).
+#
+# NOT for monorepos: this workflow publishes exactly one package.json in
+# `working-directory`. Dependency-ordered multi-package publishing is a
+# separate, still-pending decision (ecosystem-cohesion-plan.md section 2b)
+# and stays out of `johnhenry/workflows@v1`.
+#
+# Provenance gotcha (read this before wiring a caller): `--provenance`
+# needs OIDC, which needs `permissions: id-token: write`. Because this is a
+# *reusable* workflow, permissions are the intersection of what this job
+# requests and what the CALLING job/workflow grants -- granting id-token:
+# write only in here is not enough. The caller's job that does
+# `uses: johnhenry/workflows/.github/workflows/npm-publish.yml@v1` must
+# ALSO declare:
+#   permissions:
+#     contents: read
+#     id-token: write
+# See this repo's README for a full example.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: >-
+          Node.js major version for install, gate, and publish steps. Must
+          equal the caller repo's engines.node major (family floor: 26).
+        required: false
+        type: string
+        default: "26"
+      working-directory:
+        description: >-
+          Directory containing the package.json to publish. Single-package
+          repos only -- leave as "." unless the publishable package lives
+          in a subdirectory.
+        required: false
+        type: string
+        default: "."
+      install-command:
+        description: >-
+          Command to install dependencies before the gate runs. Use
+          "npm ci" when a package-lock.json is committed (the default);
+          use "npm install" for repos without a committed lockfile.
+        required: false
+        type: string
+        default: "npm ci"
+      node-cache:
+        description: >-
+          Value passed to actions/setup-node's `cache` input ("npm" by
+          default). Set to an empty string for repos with no committed
+          lockfile -- actions/setup-node errors if asked to cache npm
+          without one.
+        required: false
+        type: string
+        default: "npm"
+      gate-commands:
+        description: >-
+          Newline-separated commands that must all succeed before
+          publishing (build, typecheck, test, generated-artifact drift
+          check, etc). Runs as a single bash script with -e/-o pipefail,
+          so any failing line stops the job before publish runs.
+        required: false
+        type: string
+        default: "npm test"
+    secrets:
+      NPM_TOKEN:
+        description: >-
+          npm token with publish rights for the target scope. Pass with
+          `secrets: inherit` at the call site (simplest) or explicitly.
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance -- see the gotcha note above; the
+        # CALLING job needs this too, or OIDC token minting fails silently
+        # and `npm publish --provenance` errors out.
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          registry-url: https://registry.npmjs.org
+          cache: ${{ inputs.node-cache }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install-command }}
+
+      - name: Gate
+        run: ${{ inputs.gate-commands }}
+
+      - name: Publish (idempotent)
+        # Pre-flight `npm view` guard -- the family standard. Ask the
+        # registry whether this exact version already exists; if so, skip
+        # cleanly instead of letting `npm publish` fail on "cannot publish
+        # over the previously published version" (a stderr-wording
+        # dependency the family explicitly avoids -- see
+        # publish-npm-single/SKILL.md and publish-npm-monorepo/SKILL.md).
+        # A clean skip here is a SUCCESSFUL run, not a failure: it means
+        # the version in package.json is already on the registry.
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "::notice title=Already published::$PKG_NAME@$PKG_VERSION is already on npm; nothing to do."
+            exit 0
+          fi
+          npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

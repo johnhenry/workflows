@@ -1,0 +1,131 @@
+name: ci (reusable)
+
+# Reusable `workflow_call` target implementing the @johnhenry family's CI
+# standard: the concurrency-cancel block, an OS/Node matrix, a gate command
+# list, and an optional generated-artifact drift gate (Tier B).
+#
+# Source of the concurrency block: math-plus's ci.yml (the comment there
+# already asserts the family-wide intent; see
+# ~/.claude/skills/adopt-library/templates/ci-concurrency.yml). Source of
+# the drift-check shape: css-signals' ci.yml (see
+# ~/.claude/skills/adopt-library/templates/ci-generated-artifact-drift.yml).
+#
+# workflow_call inputs can't be typed as arrays, so `node-versions` and `os`
+# are JSON-encoded strings expanded with fromJSON() in the matrix.
+
+on:
+  workflow_call:
+    inputs:
+      node-versions:
+        description: >-
+          JSON array of Node.js major versions to test, e.g. ["26"]. Family
+          floor is 26; override only for repos still verifying an older
+          floor (ecosystem-cohesion-plan.md section 3 lists the current
+          exceptions).
+        required: false
+        type: string
+        default: '["26"]'
+      os:
+        description: >-
+          JSON array of runner OSes, e.g. ["ubuntu-latest", "windows-latest"].
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      install-command:
+        description: >-
+          Command to install dependencies. Use "npm ci" when a
+          package-lock.json is committed (the default); use "npm install"
+          for repos without a committed lockfile.
+        required: false
+        type: string
+        default: "npm ci"
+      node-cache:
+        description: >-
+          Value passed to actions/setup-node's `cache` input ("npm" by
+          default). Set to an empty string for repos with no committed
+          lockfile.
+        required: false
+        type: string
+        default: "npm"
+      gate-commands:
+        description: >-
+          Newline-separated commands that must all succeed (build,
+          typecheck, test, examples smoke test, etc). Runs as a single
+          bash script with -e/-o pipefail.
+        required: false
+        type: string
+        default: "npm test"
+      drift-check:
+        description: >-
+          Enable the generated-artifact drift gate (Tier B) -- for repos
+          that commit generated output (built CSS, dist/, schemas) that
+          ships in the published tarball.
+        required: false
+        type: boolean
+        default: false
+      drift-build-command:
+        description: >-
+          Command that regenerates the committed artifact. Only used when
+          drift-check is true.
+        required: false
+        type: string
+        default: "npm run build"
+      drift-path:
+        description: >-
+          Path(s) passed to `git diff --exit-code --` to detect drift in
+          the generated artifact. Only used when drift-check is true.
+        required: false
+        type: string
+        default: "dist"
+
+# Supersede an in-flight run when new commits land on the same ref -- the
+# whole family shares this block so a rapid push sequence never queues N
+# redundant runs. This is the reusable workflow's OWN concurrency group; it
+# applies to the run of this called workflow regardless of which repo calls
+# it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os) }}
+        node-version: ${{ fromJSON(inputs.node-versions) }}
+    defaults:
+      run:
+        shell: bash # normalize across the OS matrix -- windows-latest
+          # runners ship Git Bash, so family gate scripts that use bash
+          # syntax (e.g. spintax's `for f in examples/0*.mjs; do ...`)
+          # behave the same as on ubuntu-latest instead of falling back to
+          # pwsh's different quoting/globbing rules.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: ${{ inputs.node-cache }}
+      - name: Install dependencies
+        run: ${{ inputs.install-command }}
+      - name: Gate
+        run: ${{ inputs.gate-commands }}
+
+  drift:
+    if: ${{ inputs.drift-check }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: ${{ inputs.node-cache }}
+      - run: ${{ inputs.install-command }}
+      - run: ${{ inputs.drift-build-command }}
+      - name: Check for drift
+        run: git diff --exit-code -- ${{ inputs.drift-path }}

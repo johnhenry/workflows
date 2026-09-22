@@ -1,0 +1,46 @@
+name: dependency-review (reusable)
+
+# Reusable `workflow_call` target for the family's PR dependency-review
+# job, factored out of near-identical copies in aimatey, andbox, and
+# aimatey-middleware-andbox's .github/workflows/dependency-review.yml.
+# There the only real variation was fail-on-severity/deny-licenses (which
+# were actually identical in all three, so kept as sensible defaults here)
+# and the `on: pull_request: branches: [...]` list.
+#
+# IMPORTANT: branches are NOT an input here, for the same reason as
+# codeql.yml -- a reusable workflow's own `on:` triggers only fire for this
+# repo. Each consuming repo keeps a thin wrapper with its own
+# `on: pull_request: branches: [...]` that calls this workflow's
+# `dependency-review` job. See this repo's README for the wrapper example.
+
+on:
+  workflow_call:
+    inputs:
+      fail-on-severity:
+        description: "Minimum dependency-review-action severity that fails the check."
+        required: false
+        type: string
+        default: "moderate"
+      deny-licenses:
+        description: "Comma-separated SPDX license identifiers to deny."
+        required: false
+        type: string
+        default: "GPL-3.0, AGPL-3.0"
+
+jobs:
+  dependency-review:
+    name: Review Dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: ${{ inputs.fail-on-severity }}
+          deny-licenses: ${{ inputs.deny-licenses }}
+          comment-summary-in-pr: always
