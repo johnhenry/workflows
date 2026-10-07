@@ -1,25 +1,28 @@
 name: npm-publish (reusable)
 
 # Reusable `workflow_call` target implementing the @johnhenry family's
-# single-package publish standard (see publish-npm-single/SKILL.md in
-# John's local Claude skills, and ecosystem-cohesion-plan.md section 2a).
+# single-package publish standard: "main is the release branch".
+#
+# The caller triggers it ONLY on `push: branches: [main]` (+
+# `workflow_dispatch`) -- never `release:` or `push: tags:`. When the version
+# in package.json is not on the npm registry yet, this workflow gates,
+# publishes with provenance, and then -- as a by-product -- creates the git tag
+# `v<version>` and a GitHub Release for it. When the version is already
+# published it is a clean no-op (success, not failure).
 #
 # NOT for monorepos: this workflow publishes exactly one package.json in
-# `working-directory`. Dependency-ordered multi-package publishing is a
-# separate, still-pending decision (ecosystem-cohesion-plan.md section 2b)
-# and stays out of `johnhenry/workflows@v1`.
+# `working-directory`. Monorepos use changesets/action (see
+# templates/publish-changesets.yml).
 #
-# Provenance gotcha (read this before wiring a caller): `--provenance`
-# needs OIDC, which needs `permissions: id-token: write`. Because this is a
-# *reusable* workflow, permissions are the intersection of what this job
-# requests and what the CALLING job/workflow grants -- granting id-token:
-# write only in here is not enough. The caller's job that does
-# `uses: johnhenry/workflows/.github/workflows/npm-publish.yml@v1` must
-# ALSO declare:
+# Permissions (read this before wiring a caller): this job declares NO
+# `permissions:` of its own, so it runs with whatever the CALLING job grants.
+# The caller's job must declare
 #   permissions:
-#     contents: read
-#     id-token: write
-# See this repo's README for a full example.
+#     contents: write   # tag + GitHub Release (since v1.1.0)
+#     id-token: write   # npm provenance
+# A caller that still grants only `contents: read` keeps publishing exactly as
+# before; the tag/release step just skips with a warning (it never fails the
+# run). See this repo's README.
 
 on:
   workflow_call:
@@ -65,6 +68,22 @@ on:
         required: false
         type: string
         default: "npm test"
+      create-release:
+        description: >-
+          After a successful publish, create the git tag v<version> and a
+          GitHub Release for it. Needs the caller's job to grant
+          `contents: write`; without it the step skips with a warning.
+        required: false
+        type: boolean
+        default: true
+      release-notes:
+        description: >-
+          "auto" (default) generates release notes from merged PRs
+          (`gh release create --generate-notes`); "none" writes a one-line
+          body linking the npm page.
+        required: false
+        type: string
+        default: "auto"
     secrets:
       NPM_TOKEN:
         description: >-
@@ -72,14 +91,24 @@ on:
           `secrets: inherit` at the call site (simplest) or explicitly.
         required: true
 
+    outputs:
+      published:
+        description: '"true" if this run published a new version to npm, otherwise "false".'
+        value: ${{ jobs.publish.outputs.published }}
+      version:
+        description: The version in package.json at the commit that ran.
+        value: ${{ jobs.publish.outputs.version }}
+
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write # npm provenance -- see the gotcha note above; the
-        # CALLING job needs this too, or OIDC token minting fails silently
-        # and `npm publish --provenance` errors out.
+    # No `permissions:` here on purpose: a reusable job that requests more than
+    # its caller grants fails at startup, which would break every existing
+    # caller that only grants `contents: read`. Inheriting the caller's token
+    # lets those callers keep working (the tag/release step skips for them).
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+      version: ${{ steps.publish.outputs.version }}
     defaults:
       run:
         shell: bash
@@ -100,21 +129,65 @@ jobs:
         run: ${{ inputs.gate-commands }}
 
       - name: Publish (idempotent)
-        # Pre-flight `npm view` guard -- the family standard. Ask the
-        # registry whether this exact version already exists; if so, skip
-        # cleanly instead of letting `npm publish` fail on "cannot publish
-        # over the previously published version" (a stderr-wording
-        # dependency the family explicitly avoids -- see
-        # publish-npm-single/SKILL.md and publish-npm-monorepo/SKILL.md).
-        # A clean skip here is a SUCCESSFUL run, not a failure: it means
-        # the version in package.json is already on the registry.
+        id: publish
+        # Pre-flight `npm view` guard: ask the registry whether this exact
+        # version exists; if so, skip cleanly instead of letting `npm publish`
+        # fail on "cannot publish over the previously published version".
+        # A skip is a SUCCESSFUL run (published=false), not a failure -- on the
+        # push-to-main model most pushes do not change the version.
         run: |
           PKG_NAME=$(node -p "require('./package.json').name")
           PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
           if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
             echo "::notice title=Already published::$PKG_NAME@$PKG_VERSION is already on npm; nothing to do."
+            echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           npm publish --provenance --access public
+          echo "published=true" >> "$GITHUB_OUTPUT"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag and GitHub Release (by-product)
+        if: steps.publish.outputs.published == 'true' && inputs.create-release
+        # Never fails the run for the expected cases: missing `contents: write`
+        # on the caller (warning), tag already exists (notice), or a dispatch
+        # from a non-default branch (notice). The package is already on npm by
+        # this point, so these are by-products, not gates.
+        run: |
+          TAG="v${PKG_VERSION}"
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::notice title=Tag/release skipped::running on $GITHUB_REF_NAME, not the default branch ($DEFAULT_BRANCH); not tagging."
+            exit 0
+          fi
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]; then
+            echo "::notice title=Tag exists::$TAG already exists; not creating a release."
+            exit 0
+          fi
+          ARGS=(release create "$TAG" --target "$GITHUB_SHA" --title "$TAG")
+          if [ "$RELEASE_NOTES" = "none" ]; then
+            ARGS+=(--notes "Published to npm: https://www.npmjs.com/package/${PKG_NAME}/v/${PKG_VERSION}")
+          else
+            ARGS+=(--generate-notes)
+          fi
+          case "$PKG_VERSION" in *-*) ARGS+=(--prerelease) ;; esac
+          if OUT=$(gh "${ARGS[@]}" 2>&1); then
+            echo "$OUT"
+            echo "::notice title=Released::$TAG created."
+          elif grep -qiE 'resource not accessible|HTTP 403|must have push access|permission' <<<"$OUT"; then
+            echo "::warning title=Tag/release skipped::the calling job lacks 'contents: write', so $TAG was not created. Add 'permissions: { contents: write, id-token: write }' to the job that calls npm-publish.yml."
+          elif grep -qiE 'already exists|already_exists|tag_name.*(exists|already)' <<<"$OUT"; then
+            echo "::notice title=Tag exists::$TAG already exists; not creating a release."
+          else
+            echo "$OUT" >&2
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PKG_NAME: ${{ steps.publish.outputs.name }}
+          PKG_VERSION: ${{ steps.publish.outputs.version }}
+          RELEASE_NOTES: ${{ inputs.release-notes }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}

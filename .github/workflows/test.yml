@@ -1,0 +1,35 @@
+name: Test
+
+# This repo's own CI: unit tests for the publish linter, the codemod, and the
+# npm-publish.yml tag/release step logic (see test/). Separate from ci.yml,
+# which is the reusable workflow consumers call.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - run: npm test
+      - name: Lint the caller templates with the linter
+        run: |
+          for t in publish publish-changesets; do
+            d=$(mktemp -d)
+            mkdir -p "$d/.github/workflows"
+            cp "templates/$t.yml" "$d/.github/workflows/publish.yml"
+            echo '{"engines":{"node":">=26"}}' > "$d/package.json"
+            node scripts/lint-publish-workflow.mjs "$d"
+          done

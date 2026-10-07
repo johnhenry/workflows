@@ -1,0 +1,70 @@
+name: Release
+
+# Publish model: main is the release branch. A push to main publishes only if
+# package.json's version isn't on npm yet (otherwise a clean no-op), then tags
+# v<version> and creates a GitHub Release. See johnhenry/workflows' README.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Gate (typecheck + tests + build)
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Verify tag matches package version
+        if: github.ref_type == 'tag'
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "tag v$TAG_VERSION does not match package version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+      - name: No NPM_TOKEN — skipping publish
+        if: env.NPM_TOKEN == ''
+        run: |
+          echo "::notice title=Publish skipped::NPM_TOKEN is not configured; nothing was published."
+
+      - name: Publish to npm
+        if: env.NPM_TOKEN != ''
+        # Prerelease versions go to the "rc" dist-tag; stable to "latest".
+        # Idempotent: `npm view` exits non-zero for a version that isn't on the
+        # registry yet, which is the signal to publish.
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "::notice title=Already published::$PKG_NAME@$PKG_VERSION is already on npm; nothing to do."
+            exit 0
+          fi
+          case "$PKG_VERSION" in
+            *-*) DIST_TAG=rc ;;
+            *)   DIST_TAG=latest ;;
+          esac
+          echo "publishing $PKG_NAME@$PKG_VERSION with dist-tag $DIST_TAG"
+          npm publish --provenance --access public --tag "$DIST_TAG"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
