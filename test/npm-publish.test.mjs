@@ -128,3 +128,8 @@ test("workflow contract: inputs, outputs, gating, no job-level permissions", () 
   assert.match(rel.if, /inputs\.create-release/);
   assert.ok(wf.on.workflow_call.secrets.NPM_TOKEN.required);
 });
+
+test("npm-publish.yml declares no concurrency block (same-group deadlock invariant)", () => {
+  assert.equal("concurrency" in wf, false);
+  for (const job of Object.values(wf.jobs)) assert.equal("concurrency" in job, false);
+});

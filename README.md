@@ -92,6 +92,48 @@ exactly as before, and the tag/release step skips with a
 `contents: write`. Moving `v1` to `v1.1.0` is therefore safe; callers pick up
 tags and Releases as they add the permission (the codemod does it for them).
 
+Permissions by job type (write includes read):
+
+| Job | `id-token` | `contents` | `pull-requests` |
+|---|---|---|---|
+| Calls `npm-publish.yml` | `write` (OIDC: trusted publishing + provenance) | `write` (tag + Release by-product; `read` still publishes, tag step skips) | -- |
+| Inline `npm publish` job | `write` | `read` is enough | -- |
+| `changesets/action` (Flow B) | `write` | `write` (bump commit, tags, Releases) | `write` (Version Packages PR) |
+
+### Trusted publishing (OIDC) -- the filename is part of the trust
+
+As of 2026-10-07 npm trusted publishing is live for 141 of the 143
+`@johnhenry` packages. Each package trusts exactly **one repo and one workflow
+filename**. Consequences:
+
+- **Never rename, split or consolidate a publish workflow file** without
+  re-trusting it. If a consolidation is unavoidable, keep the old filename as
+  the trusted entry point, or have the maintainer (2FA required) run, per
+  package: `npm trust github <pkg> --repo <owner/repo> --file <new>.yml --allow-publish`.
+  Convert in place; `convert-publish.mjs` already does.
+- Known trusted filenames: `publish.yml` (the default, single packages);
+  `release.yml` (aimatey, browsermesh, optical-artifact-transport and the
+  monorepos); `npm-publish.yaml` (tester); `objectify-publish.yml`
+  (`@johnhenry/objectify`); `release-gate.yml` and
+  `release-mcp-query-tanstack.yml` (mcp-gate, mcp-query-tanstack).
+- For a reusable-workflow caller, the trusted filename is the **caller's**
+  file, not `npm-publish.yml` (canvas-fx 0.0.1 published via OIDC this way;
+  its `_npmUser` is "GitHub Actions").
+- npm prefers OIDC even when `NODE_AUTH_TOKEN` is set. Keep passing the token
+  (`secrets: inherit`) as a fallback for now; the `NPM_TOKEN` secrets have not
+  been removed. `--provenance` stays standard.
+- Caller-level `concurrency: { group: publish-${{ github.ref }},
+  cancel-in-progress: false }` is the standard. The reusable workflow must
+  **never** declare a `concurrency` block: the same group at two levels
+  deadlocks the run before it starts (the `ci.yml@v1` lesson). A test pins
+  this for `npm-publish.yml`.
+- The linter prints an INFO line listing the publish workflow filenames it
+  checked, so a rename shows up in PR logs.
+
+Docs of record (hive-mind repo, read-only here): `ecosystem` `npm-tokens/README.md`
+("Publishing: trusted publishing"); the `adopt-library` skill, SKILL.md Phases 3
+and 5; `LESSONS.md` entries 2026-10-05 and 2026-10-07.
+
 ### Flow A -- single package (reusable workflow)
 
 Copy [`templates/publish.yml`](templates/publish.yml) to
@@ -106,7 +148,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: publish
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -216,6 +258,8 @@ workflow that calls `npm-publish.yml`, runs `npm publish`, or uses
 | `secrets-inherit` | a job calling `npm-publish.yml` lacks `secrets: inherit` |
 
 Run it locally with `node scripts/lint-publish-workflow.mjs <repo-path>`.
+It also prints `workflow-lint: INFO publish workflow filenames (trust-bound ...)`
+listing the files it checked (see "Trusted publishing").
 The YAML parser is `yaml` (ISC) vendored as a single bundled file in
 `scripts/vendor/` -- no install step is needed to run it from a checkout.
 

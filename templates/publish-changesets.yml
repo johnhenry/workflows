@@ -1,3 +1,4 @@
+# NOTE: the FILENAME of this workflow is part of npm trusted publishing -- keep it.
 # .github/workflows/publish.yml -- monorepo publish with Changesets.
 #
 # Flow: PRs that change a package include a changeset (`npx changeset`). On every
@@ -18,7 +19,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: publish
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
