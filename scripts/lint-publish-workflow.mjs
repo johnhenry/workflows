@@ -35,7 +35,20 @@ export const RULES = {
   "permissions-contents-write": "job calling npm-publish.yml needs `permissions: contents: write`",
   "node-matches-engines": "`node-version` major must equal the repo's `engines.node` major",
   "secrets-inherit": "job calling npm-publish.yml needs `secrets: inherit`",
+  "concurrency-group-unique": "when a repo has several publish workflows, each `concurrency.group` must be distinct (a shared group makes GitHub cancel queued runs)",
 };
+
+/** Concurrency groups used by a workflow's publish jobs (workflow- or job-level): [{ group, line }]. */
+export function publishGroups(text) {
+  const wf = parseWorkflow(text);
+  if (wf.errors.length || !wf.root) return [];
+  const seen = new Map();
+  for (const job of jobsOf(wf).filter((j) => j.isPublish)) {
+    const c = concurrencyState(wf, job);
+    if (c.present && c.group && !seen.has(c.group)) seen.set(c.group, c.line);
+  }
+  return [...seen].map(([group, line]) => ({ group, line }));
+}
 
 /**
  * @param {{ text: string, file?: string, engineMajor?: number|null }} input
@@ -170,6 +183,17 @@ export function lintRepo(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = glob =
     file: rel,
     findings: lintWorkflow({ text: fs.readFileSync(path.join(repoPath, rel), "utf8"), engineMajor: info.major }),
   }));
+  // cross-file: concurrency groups must be distinct across publish workflows
+  const owner = new Map();
+  for (const r of results) {
+    for (const { group, line } of publishGroups(fs.readFileSync(path.join(repoPath, r.file), "utf8"))) {
+      const first = owner.get(group);
+      if (first && first !== r.file) {
+        r.findings.push({ line, rule: "concurrency-group-unique", message: `concurrency group \`${group}\` is also used by ${first}; two publish workflows sharing a group makes GitHub cancel queued runs. Give each a distinct group (e.g. \`<workflow-name>-\${{ github.ref }}\`)` });
+        r.findings.sort((a, b) => a.line - b.line);
+      } else owner.set(group, r.file);
+    }
+  }
   return { files, results, engine: info };
 }
 

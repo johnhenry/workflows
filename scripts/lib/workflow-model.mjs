@@ -139,9 +139,10 @@ export function concurrencyState(wf, job) {
     if (isMap(c)) {
       const cancel = valueOf(c, "cancel-in-progress");
       const v = scalarOf(cancel);
-      return { present: true, line: wf.lineOf(c.range[0]), cancelFalse: v === false || v === "false", cancelLine: cancel ? wf.lineOf(cancel.range[0]) : null };
+      const g = scalarOf(valueOf(c, "group"));
+      return { present: true, line: wf.lineOf(c.range[0]), cancelFalse: v === false || v === "false", cancelLine: cancel ? wf.lineOf(cancel.range[0]) : null, group: g == null ? null : String(g).trim() };
     }
-    return { present: true, line: wf.lineOf(c.range[0]), cancelFalse: false, cancelLine: null };
+    return { present: true, line: wf.lineOf(c.range[0]), cancelFalse: false, cancelLine: null, group: scalarOf(c) == null ? null : String(scalarOf(c)).trim() };
   }
   return { present: false };
 }

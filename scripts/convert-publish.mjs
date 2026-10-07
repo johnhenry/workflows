@@ -32,7 +32,7 @@ import {
   majorOfVersion,
 } from "./lib/workflow-model.mjs";
 import { engineInfo, DEFAULT_PUBLISH_GLOB } from "./lib/repo-info.mjs";
-import { discoverPublishWorkflows } from "./lint-publish-workflow.mjs";
+import { discoverPublishWorkflows, publishGroups } from "./lint-publish-workflow.mjs";
 
 export const MARKER = "# Publish model:";
 const MARKER_LINES = [
@@ -61,7 +61,10 @@ function commentRunAbove(wf, line) {
   return s === line ? null : { start: s, end: line - 1 };
 }
 
-export function convertWorkflowText(text, { engineMajor = null } = {}) {
+// `fileBase` (workflow basename, no extension) is passed only when the repo has
+// more than one publish workflow: the default group is then suffixed with it,
+// and an existing group that collides with one in `otherGroups` is suffixed too.
+export function convertWorkflowText(text, { engineMajor = null, fileBase = null, otherGroups = [] } = {}) {
   const warnings = [];
   const wf = parseWorkflow(text);
   if (wf.errors.length || !wf.root) return { text, warnings: [`YAML parse error; left untouched${wf.errors[0] ? `: ${wf.errors[0].message}` : ""}`] };
@@ -105,18 +108,25 @@ export function convertWorkflowText(text, { engineMajor = null } = {}) {
   const jobHasConc = publishJobs.length > 0 && publishJobs.every((j) => valueOf(j.map, "concurrency"));
   if (concPair) {
     const span = pairSpan(wf, concPair);
-    let group = "publish-${{ github.ref }}";
+    let group = fileBase ? `${fileBase}-\${{ github.ref }}` : "publish-${{ github.ref }}";
     const v = concPair.value;
     if (isMap(v) && valueOf(v, "group")) {
       const g = valueOf(v, "group");
       group = wf.text.slice(g.range[0], g.range[1]);
     } else if (isScalar(v) && v.value != null) group = wf.text.slice(v.range[0], v.range[1]);
+    const bare = group.replace(/^(["'])(.*)\1$/, "$2").trim();
+    if (fileBase && otherGroups.includes(bare)) {
+      const q = /^["']/.test(group) ? group[0] : "";
+      const next = `${q}${bare}-${fileBase}${q}`;
+      warnings.push(`concurrency group \`${bare}\` is shared with another publish workflow (GitHub cancels queued runs in a shared group); changed to \`${bare}-${fileBase}\``);
+      group = next;
+    }
     const run = commentRunAbove(wf, span.start);
     let start = span.start;
     if (run && RACE_RE.test(wf.lines.slice(run.start - 1, run.end).join("\n"))) start = run.start;
     edits.push({ start, end: span.end, lines: ["concurrency:", `  group: ${group}`, "  cancel-in-progress: false"] });
   } else if (!jobHasConc) {
-    onReplacement = [...onReplacement, "", "concurrency:", "  group: publish-${{ github.ref }}", "  cancel-in-progress: false"];
+    onReplacement = [...onReplacement, "", "concurrency:", `  group: ${fileBase ? `${fileBase}-` : "publish-"}\${{ github.ref }}`, "  cancel-in-progress: false"];
   }
   edits.push({ start: onStart, end: onSpan.end, lines: onReplacement });
 
@@ -272,10 +282,13 @@ export function convertRepo(repoPath, { dryRun = false, glob = DEFAULT_PUBLISH_G
   const files = [];
   const warnings = [];
   if (info.major == null) warnings.push(`no engines.node found (${info.source}); node-version left as is`);
-  for (const rel of discoverPublishWorkflows(repoPath, glob, { sniff: glob === DEFAULT_PUBLISH_GLOB })) {
-    const abs = path.join(repoPath, rel);
-    const before = fs.readFileSync(abs, "utf8");
-    const r = convertWorkflowText(before, { engineMajor: info.major });
+  const rels = discoverPublishWorkflows(repoPath, glob, { sniff: glob === DEFAULT_PUBLISH_GLOB });
+  const texts = new Map(rels.map((rel) => [rel, fs.readFileSync(path.join(repoPath, rel), "utf8")]));
+  for (const rel of rels) {
+    const before = texts.get(rel);
+    const multi = rels.length > 1;
+    const otherGroups = multi ? rels.filter((o) => o !== rel).flatMap((o) => publishGroups(texts.get(o)).map((g) => g.group.replace(/^(["'])(.*)\1$/, "$2"))) : [];
+    const r = convertWorkflowText(before, { engineMajor: info.major, fileBase: multi ? path.basename(rel).replace(/\.ya?ml$/, "") : null, otherGroups });
     files.push({ file: rel, before, after: r.text, created: false });
     for (const w of r.warnings) warnings.push(`${rel}: ${w}`);
   }

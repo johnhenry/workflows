@@ -5,7 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { convertWorkflowText, convertRepo, addWorkflowLint, formatSummary, lineDiff } from "../scripts/convert-publish.mjs";
-import { lintWorkflow } from "../scripts/lint-publish-workflow.mjs";
+import { lintWorkflow, lintRepo } from "../scripts/lint-publish-workflow.mjs";
 import { parseWorkflow, jobsOf } from "../scripts/lib/workflow-model.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -22,15 +22,19 @@ const CONSUMERS = [
   ["raijin.publish.yml", "release-only inline monorepo publish"],
 ];
 
+// isomorphic-jj has two publish workflows in one repo: convert them as such.
+const MULTI = { "isomorphic-jj.publish.yml": "publish", "isomorphic-jj.publish-unscoped.yml": "publish-unscoped" };
+
 for (const [name, what] of CONSUMERS) {
   test(`consumer fixture ${name} (${what})`, () => {
     const before = read("consumers", name);
-    const a = convertWorkflowText(before, { engineMajor: 26 });
+    const opts = { engineMajor: 26, ...(MULTI[name] ? { fileBase: MULTI[name] } : {}) };
+    const a = convertWorkflowText(before, opts);
     const goldenPath = path.join(here, "fixtures", "expected", name);
     if (UPDATE) fs.writeFileSync(goldenPath, a.text);
     assert.equal(a.text, fs.readFileSync(goldenPath, "utf8"), "output differs from golden file");
     // idempotent
-    assert.equal(convertWorkflowText(a.text, { engineMajor: 26 }).text, a.text, "second run changed the file");
+    assert.equal(convertWorkflowText(a.text, opts).text, a.text, "second run changed the file");
     // converges to lint-clean
     assert.deepEqual(lintWorkflow({ text: a.text, engineMajor: 26 }), []);
     // no tag/release triggers or race commentary survive
@@ -174,4 +178,38 @@ test("diff summary reports +/- counts", () => {
   assert.match(s, /change \.github\/workflows\/publish\.yml {2}\(\+\d+ -\d+\)/);
   assert.match(s, /create \.github\/workflows\/ci\.yml/);
   assert.match(s, /^ {4}\+ {5}branches: \[main\]$/m);
+});
+
+test("multi-file repo: default groups are suffixed with the workflow basename and distinct", () => {
+  const d = tmpRepo({
+    ".github/workflows/publish.yml": read("consumers", "isomorphic-jj.publish.yml"),
+    ".github/workflows/publish-unscoped.yml": read("consumers", "isomorphic-jj.publish-unscoped.yml"),
+  });
+  convertRepo(d, { ci: false });
+  const a = fs.readFileSync(path.join(d, ".github/workflows/publish.yml"), "utf8");
+  const b = fs.readFileSync(path.join(d, ".github/workflows/publish-unscoped.yml"), "utf8");
+  assert.match(a, /group: publish-\$\{\{ github\.ref \}\}/);
+  assert.match(b, /group: publish-unscoped-\$\{\{ github\.ref \}\}/);
+  const { results } = lintRepo(d);
+  assert.deepEqual(results.flatMap((r) => r.findings.filter((f) => f.rule === "concurrency-group-unique")), []);
+  const again = convertRepo(d, { ci: false });
+  assert.equal(again.files.filter((f) => f.changed).length, 0);
+});
+
+test("multi-file repo: a colliding existing group is suffixed and reported", () => {
+  const wf = (g) => read("expected", "fileable.publish.yml").replace(/group: .*/, `group: ${g}`);
+  const d = tmpRepo({ ".github/workflows/publish.yml": wf("shared"), ".github/workflows/release.yml": wf("shared") });
+  const r = convertRepo(d, { ci: false });
+  assert.ok(r.warnings.some((w) => /shared with another publish workflow/.test(w)));
+  const a = fs.readFileSync(path.join(d, ".github/workflows/publish.yml"), "utf8");
+  const b = fs.readFileSync(path.join(d, ".github/workflows/release.yml"), "utf8");
+  assert.match(a, /group: shared-publish$/m);
+  assert.match(b, /group: shared-release$/m);
+  assert.equal(convertRepo(d, { ci: false }).files.filter((f) => f.changed).length, 0);
+});
+
+test("single-file repo: an existing shared-looking group is preserved verbatim", () => {
+  const d = tmpRepo({ ".github/workflows/publish.yml": read("expected", "fileable.publish.yml").replace(/group: .*/, "group: shared") });
+  convertRepo(d, { ci: false });
+  assert.match(fs.readFileSync(path.join(d, ".github/workflows/publish.yml"), "utf8"), /group: shared$/m);
 });

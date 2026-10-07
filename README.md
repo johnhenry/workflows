@@ -127,12 +127,20 @@ filename**. Consequences:
   **never** declare a `concurrency` block: the same group at two levels
   deadlocks the run before it starts (the `ci.yml@v1` lesson). A test pins
   this for `npm-publish.yml`.
+- **A repo with more than one publish workflow needs a distinct group per
+  file.** GitHub keeps only one pending run per group, so a shared group
+  cancels queued publishes (seen live on mcp-query). Use
+  `<workflow-basename>-${{ github.ref }}` (e.g. `publish-unscoped-${{ github.ref }}`,
+  `release-gate-${{ github.ref }}`). The `concurrency-group-unique` lint rule
+  enforces this, and the codemod suffixes default groups with the basename
+  when it finds several publish workflows (an existing group is kept verbatim
+  unless it collides, then it is suffixed and the summary says so).
 - The linter prints an INFO line listing the publish workflow filenames it
   checked, so a rename shows up in PR logs.
 
-Docs of record (hive-mind repo, read-only here): `ecosystem` `npm-tokens/README.md`
-("Publishing: trusted publishing"); the `adopt-library` skill, SKILL.md Phases 3
-and 5; `LESSONS.md` entries 2026-10-05 and 2026-10-07.
+Docs of record live in the fleet's `johnhenry/ecosystem` repo
+(github.com/johnhenry/ecosystem, PR #9): `npm-tokens/README.md` ("Publishing:
+trusted publishing"), and the `adopt-library` and `publish-npm-*` skills.
 
 ### Flow A -- single package (reusable workflow)
 
@@ -256,6 +264,7 @@ workflow that calls `npm-publish.yml`, runs `npm publish`, or uses
 | `permissions-contents-write` | a job calling `npm-publish.yml` lacks `contents: write` |
 | `node-matches-engines` | a pinned `node-version` major differs from `engines.node` (root; for monorepos with no root `engines`, the highest workspace floor) |
 | `secrets-inherit` | a job calling `npm-publish.yml` lacks `secrets: inherit` |
+| `concurrency-group-unique` | two publish workflows in the repo use the same `concurrency.group` (the finding names both files) |
 
 Run it locally with `node scripts/lint-publish-workflow.mjs <repo-path>`.
 It also prints `workflow-lint: INFO publish workflow filenames (trust-bound ...)`
