@@ -266,6 +266,14 @@ workflow that calls `npm-publish.yml`, runs `npm publish`, or uses
 | `secrets-inherit` | a job calling `npm-publish.yml` lacks `secrets: inherit` |
 | `concurrency-group-unique` | two publish workflows in the repo use the same `concurrency.group` (the finding names both files) |
 
+Workflows are selected by **content**, not filename: only files whose jobs call
+`npm-publish.yml`, run `npm publish` / `changeset publish` / `npm run release`
+(or the yarn/pnpm equivalents), or use `changesets/action` are checked. The
+`publish-workflows` glob is just the search space; a file it matches that does
+not publish to npm (a Rust-binary or PyPI release workflow such as wsh's
+`release-rust.yml` or math-plus's `release-interop-python.yml`) is skipped with
+`workflow-lint: INFO skipped <file>: does not publish to npm` and never flagged.
+
 Run it locally with `node scripts/lint-publish-workflow.mjs <repo-path>`.
 It also prints `workflow-lint: INFO publish workflow filenames (trust-bound ...)`
 listing the files it checked (see "Trusted publishing").
@@ -283,12 +291,12 @@ For each publish workflow it rewrites the `on:` block, adds/fixes
 get only `id-token: write`), sets `node-version` from `engines`, preserves
 `gate-commands` / `install-command` / `node-cache` / `working-directory` and any
 `workflow_dispatch` inputs, removes comments about the old release race, and
-adds a `workflow-lint` job to `ci.yml` (creating a minimal one if absent). It
+adds a `workflow-lint` job to `ci.yml` (**creating a minimal `ci.yml` if the repo has none**, as it did for isomorphic-jj). It
 prints a per-file diff summary, never rewrites the body of an inline publish
 job, and is idempotent. It prints `WARNING` lines for things it will not fix
 -- notably steps or `gate-commands` that compare against a tag ref
 (`GITHUB_REF#refs/tags/...`), which can never hold on a push to main and must
-be edited by hand. `--check` exits 1 if anything would change.
+be edited by hand. It uses the same content-based selection as the linter: workflows that do not publish to npm are left byte-for-byte untouched and listed as `INFO skipped <file>: does not publish to npm`. `--check` exits 1 if anything would change.
 
 ## History: the release-trigger race
 

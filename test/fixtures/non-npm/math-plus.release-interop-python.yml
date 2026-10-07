@@ -1,0 +1,47 @@
+name: Release interop-python
+
+# packages/interop-python is a PyPI package (`johnhenry-math-plus-interop`) outside the
+# npm/Cargo workspaces (docs/RELEASING.md), released separately from the
+# Changesets-driven npm/JSR releases in release.yml. Tag-triggered rather
+# than push-to-main-triggered, matching PyPI's own convention (and this
+# package's slower, independent release cadence) — push a tag
+# `johnhenry-math-plus-interop-vX.Y.Z` (bump the version in pyproject.toml first) to
+# publish.
+#
+# Uses PyPI's OIDC "Trusted Publishing" — no token/secret to store, but it
+# needs a one-time manual step on pypi.org before this does anything: see
+# docs/RELEASING.md's "PyPI (interop-python)" section.
+
+on:
+  push:
+    tags:
+      - "johnhenry-math-plus-interop-v*"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # PyPI OIDC trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          pip install build
+          python3 -m build packages/interop-python
+
+      - name: Run the conformance suite before publishing
+        run: |
+          pip install pytest pyarrow pandas numpy -e packages/interop-python
+          python3 -m pytest packages/interop-python/tests/ -v
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/interop-python/dist

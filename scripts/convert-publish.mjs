@@ -32,7 +32,7 @@ import {
   majorOfVersion,
 } from "./lib/workflow-model.mjs";
 import { engineInfo, DEFAULT_PUBLISH_GLOB } from "./lib/repo-info.mjs";
-import { discoverPublishWorkflows, publishGroups } from "./lint-publish-workflow.mjs";
+import { classifyWorkflows, publishGroups, skipMessage } from "./lint-publish-workflow.mjs";
 
 export const MARKER = "# Publish model:";
 const MARKER_LINES = [
@@ -282,7 +282,8 @@ export function convertRepo(repoPath, { dryRun = false, glob = DEFAULT_PUBLISH_G
   const files = [];
   const warnings = [];
   if (info.major == null) warnings.push(`no engines.node found (${info.source}); node-version left as is`);
-  const rels = discoverPublishWorkflows(repoPath, glob, { sniff: glob === DEFAULT_PUBLISH_GLOB });
+  const { files: rels, skipped } = classifyWorkflows(repoPath, glob, { sniff: glob === DEFAULT_PUBLISH_GLOB });
+  const infos = skipped.map(skipMessage);
   const texts = new Map(rels.map((rel) => [rel, fs.readFileSync(path.join(repoPath, rel), "utf8")]));
   for (const rel of rels) {
     const before = texts.get(rel);
@@ -310,7 +311,7 @@ export function convertRepo(repoPath, { dryRun = false, glob = DEFAULT_PUBLISH_G
         fs.mkdirSync(path.dirname(path.join(repoPath, f.file)), { recursive: true });
         fs.writeFileSync(path.join(repoPath, f.file), f.after);
       }
-  return { files: summary, warnings, engine: info };
+  return { files: summary, warnings, infos, engine: info };
 }
 
 export function formatSummary(result, { verbose = true } = {}) {
@@ -320,6 +321,7 @@ export function formatSummary(result, { verbose = true } = {}) {
     out.push(`${f.changed ? (f.created ? "create" : "change") : "ok    "} ${f.file}${f.changed ? `  (+${f.added} -${f.removed})` : ""}`);
     if (verbose && f.changed) for (const o of f.ops) if (o.op !== " ") out.push(`    ${o.op} ${o.text}`);
   }
+  for (const i of result.infos ?? []) out.push(`INFO ${i}`);
   for (const w of result.warnings) out.push(`WARNING ${w}`);
   out.push(changed.length ? `${changed.length} file(s) changed.` : "Nothing to change (already canonical).");
   return out.join("\n");
