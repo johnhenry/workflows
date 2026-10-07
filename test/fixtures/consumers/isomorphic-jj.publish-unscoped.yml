@@ -1,0 +1,97 @@
+name: Publish to npm (unscoped mirror)
+
+# Permanent parallel release: every tagged release publishes under BOTH
+# `@johnhenry/isomorphic-jj` and the unscoped `isomorphic-jj` name, same
+# version, same tag, same trigger as publish.yml -- deliberately not a
+# matrix, since the two publishes share one identical build/test run and
+# differ only in package.json's `name` field at the very end; a matrix
+# would just pay for that build/test twice for no benefit. Two names, one
+# job, each gated by its own `npm view` idempotency check so a partial
+# failure (e.g. the scoped one lands but this one fails) is safe to retry.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  id-token: write # Enables npm provenance (attests this build came from this repo/workflow)
+
+jobs:
+  publish-unscoped:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 26
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify tag matches package.json version
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF#refs/tags/}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag $TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Verify this version moves both names' latest tag forward
+        # Both names publish the same version every release (see
+        # CHANGELOG.md's 1.9.0 entry) -- refuse to publish a version that
+        # isn't strictly greater than what's already live under EITHER
+        # name, so this can't silently move npm's `latest` tag backward on
+        # either side again.
+        run: |
+          node -e '
+            const semverParts = (v) => v.split(".").map(Number);
+            const gt = (a, b) => { const A = semverParts(a), B = semverParts(b); for (let i = 0; i < 3; i++) { if (A[i] > B[i]) return true; if (A[i] < B[i]) return false; } return false; };
+            const { execSync } = require("child_process");
+            const live = (pkg) => { try { return execSync(`npm view ${pkg} version`, { encoding: "utf8" }).trim(); } catch { return "0.0.0"; } };
+            const newVersion = require("./package.json").version;
+            const scoped = live("@johnhenry/isomorphic-jj");
+            const unscoped = live("isomorphic-jj");
+            if (!gt(newVersion, scoped) || !gt(newVersion, unscoped)) {
+              console.error(`::error::${newVersion} must be greater than both the scoped (${scoped}) and unscoped (${unscoped}) published versions`);
+              process.exit(1);
+            }
+          '
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test (with coverage)
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Rename package for the unscoped mirror
+        # Only the `name` field changes -- version stays whatever the tag
+        # already checked out (see the tag/version gate above), so both
+        # names always ship the exact same version together.
+        run: npm pkg set name=isomorphic-jj
+
+      - name: Publish to npm
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "isomorphic-jj@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice title=Already published::isomorphic-jj@$VERSION is already on npm; nothing to do."
+            exit 0
+          fi
+          npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

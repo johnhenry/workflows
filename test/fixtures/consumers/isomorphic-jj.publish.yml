@@ -1,0 +1,55 @@
+name: Publish to npm
+
+# Deliberately triggered only by pushing a version tag (e.g. `v1.7.0`) —
+# no workflow_dispatch escape hatch, so there is exactly one, explicit way to
+# publish. A failed run can be retried via "Re-run failed jobs" in the
+# Actions UI without needing to recreate the tag.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  publish:
+    permissions:
+      contents: read
+      id-token: write # required by the reusable workflow's provenance step --
+        # see johnhenry/workflows' README for why this must be declared here too.
+    uses: johnhenry/workflows/.github/workflows/npm-publish.yml@v1
+    with:
+      node-version: "26"
+      # Folds in the pre-publish tag/package.json version check that used
+      # to be its own step -- the reusable workflow only exposes a single
+      # gate-commands script, so it runs first here and exits non-zero
+      # (failing the gate) on a mismatch.
+      gate-commands: |
+        PKG_VERSION="v$(node -p "require('./package.json').version")"
+        TAG_VERSION="${GITHUB_REF#refs/tags/}"
+        if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+          echo "::error::Tag $TAG_VERSION does not match package.json version $PKG_VERSION"
+          exit 1
+        fi
+        # Both @johnhenry/isomorphic-jj and the unscoped isomorphic-jj mirror
+        # (publish-unscoped.yml) publish the same version on every release --
+        # see CHANGELOG.md's 1.9.0 entry for why. Refuse to publish a version
+        # that wouldn't move BOTH names' `latest` tag forward, so this can't
+        # silently regress into a version-number downgrade on either side.
+        node -e '
+          const semverParts = (v) => v.split(".").map(Number);
+          const gt = (a, b) => { const A = semverParts(a), B = semverParts(b); for (let i = 0; i < 3; i++) { if (A[i] > B[i]) return true; if (A[i] < B[i]) return false; } return false; };
+          const { execSync } = require("child_process");
+          const live = (pkg) => { try { return execSync(`npm view ${pkg} version`, { encoding: "utf8" }).trim(); } catch { return "0.0.0"; } };
+          const newVersion = require("./package.json").version;
+          const scoped = live("@johnhenry/isomorphic-jj");
+          const unscoped = live("isomorphic-jj");
+          if (!gt(newVersion, scoped) || !gt(newVersion, unscoped)) {
+            console.error(`::error::${newVersion} must be greater than both the scoped (${scoped}) and unscoped (${unscoped}) published versions`);
+            process.exit(1);
+          }
+        '
+        npm run lint
+        npm run format:check
+        npm run typecheck
+        npm run test:coverage
+        npm run build
+    secrets: inherit

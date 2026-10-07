@@ -1,0 +1,26 @@
+name: Publish to npm
+
+# Deliberately tag-triggered rather than `release: published` (the family's
+# documented default) -- same intentional choice isomorphic-jj makes, kept
+# here rather than switched, so it needs to stay a documented deviation
+# instead of undocumented drift.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    permissions:
+      contents: read
+      id-token: write # required by the reusable workflow's provenance step --
+        # see johnhenry/workflows' README for why this must be declared here too.
+    uses: johnhenry/workflows/.github/workflows/npm-publish.yml@v1
+    with:
+      node-version: "24"
+      # No committed lockfile; match ci.yml's install so the optional
+      # @noble/post-quantum-backed tests can actually run in the gate.
+      install-command: npm install --no-save --include=optional
+      node-cache: ""
+      gate-commands: npm test
+    secrets: inherit

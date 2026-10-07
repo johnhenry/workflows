@@ -1,0 +1,16 @@
+name: npm-publish
+on:
+  release:
+    types: [published]
+jobs:
+  publish:
+    uses: johnhenry/workflows/.github/workflows/npm-publish.yml@v1
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+    with:
+      gate-commands: |
+        npm run build
+        npm test
+    secrets: inherit

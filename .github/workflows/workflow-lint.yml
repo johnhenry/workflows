@@ -1,0 +1,56 @@
+name: workflow-lint (reusable)
+
+# Reusable `workflow_call` target: fails when a repo's npm publish workflows
+# drift from the family's single publish model ("main is the release branch").
+# Rules (see scripts/lint-publish-workflow.mjs and the README):
+#   - no `release:` trigger, no `push.tags` trigger
+#   - `push: branches: [main]` and `workflow_dispatch` present
+#   - `concurrency` with `cancel-in-progress: false`
+#   - `permissions: id-token: write` on the publish job, plus
+#     `contents: write` when it calls npm-publish.yml
+#   - `node-version` major == the repo's `engines.node` major
+#   - `secrets: inherit` on jobs calling npm-publish.yml
+#
+# Wire it into the caller's CI (one job, no inputs needed):
+#   jobs:
+#     workflow-lint:
+#       uses: johnhenry/workflows/.github/workflows/workflow-lint.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      publish-workflows:
+        description: >-
+          Glob (relative to the repo root; `*` and `{a,b}` supported) of the
+          publish workflow files to lint. Workflows that call npm-publish.yml
+          or run `npm publish` / changesets/action are linted regardless of
+          name when this is left at the default.
+        required: false
+        type: string
+        default: ".github/workflows/{publish,release,npm-publish}*.{yml,yaml}"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the caller repo
+        uses: actions/checkout@v4
+
+      - name: Fetch the lint script
+        uses: actions/checkout@v4
+        with:
+          repository: johnhenry/workflows
+          ref: v1
+          path: .workflows-lint
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+
+      - name: Lint publish workflows
+        run: node .workflows-lint/scripts/lint-publish-workflow.mjs . --glob "$PUBLISH_WORKFLOWS"
+        env:
+          PUBLISH_WORKFLOWS: ${{ inputs.publish-workflows }}

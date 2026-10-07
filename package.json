@@ -1,0 +1,9 @@
+{
+  "name": "johnhenry-workflows",
+  "private": true,
+  "description": "Reusable GitHub Actions workflows for the @johnhenry npm family (not published).",
+  "engines": { "node": ">=26.0.0" },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}
