@@ -213,3 +213,33 @@ test("single-file repo: an existing shared-looking group is preserved verbatim",
   convertRepo(d, { ci: false });
   assert.match(fs.readFileSync(path.join(d, ".github/workflows/publish.yml"), "utf8"), /group: shared$/m);
 });
+
+// Issue #6: select by content, not filename.
+const NON_NPM = { "wsh.release-rust.yml": "release-rust.yml", "math-plus.release-interop-python.yml": "release-interop-python.yml" };
+
+test("non-npm release workflows (rust binaries, PyPI) are untouched, unflagged and reported as skipped", () => {
+  const files = { ".github/workflows/publish.yml": read("consumers", "fileable.publish.yml") };
+  for (const [fx, name] of Object.entries(NON_NPM)) files[`.github/workflows/${name}`] = read("non-npm", fx);
+  const d = tmpRepo(files);
+  const r = convertRepo(d);
+  assert.deepEqual(r.files.map((f) => f.file).filter((f) => f.includes("release-")), []);
+  assert.deepEqual(r.infos.sort(), [
+    "skipped .github/workflows/release-interop-python.yml: does not publish to npm",
+    "skipped .github/workflows/release-rust.yml: does not publish to npm",
+  ]);
+  assert.match(formatSummary(r), /INFO skipped .*release-rust\.yml: does not publish to npm/);
+  for (const [fx, name] of Object.entries(NON_NPM))
+    assert.equal(fs.readFileSync(path.join(d, ".github/workflows", name), "utf8"), read("non-npm", fx));
+  // the lone publish workflow is the only one that gets multi-file treatment -> default group unchanged
+  assert.match(fs.readFileSync(path.join(d, ".github/workflows/publish.yml"), "utf8"), /group: publish-\$\{\{ github\.ref \}\}/);
+});
+
+test("lintRepo skips non-npm release workflows with an INFO and no findings", () => {
+  const files = { ".github/workflows/publish.yml": read("expected", "fileable.publish.yml") };
+  for (const [fx, name] of Object.entries(NON_NPM)) files[`.github/workflows/${name}`] = read("non-npm", fx);
+  const d = tmpRepo(files);
+  const r = lintRepo(d);
+  assert.deepEqual(r.files, [".github/workflows/publish.yml"]);
+  assert.equal(r.skipped.length, 2);
+  assert.deepEqual(r.results.flatMap((x) => x.findings), []);
+});

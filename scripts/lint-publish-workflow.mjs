@@ -155,30 +155,49 @@ export function lintWorkflow({ text, engineMajor = null }) {
   return out.sort((a, b) => a.line - b.line);
 }
 
-/** Workflows to lint: glob matches, plus any workflow that publishes. */
-export function discoverPublishWorkflows(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = true } = {}) {
-  const found = new Set(matchWorkflowFiles(repoPath, glob));
-  if (sniff) {
-    const dir = path.join(repoPath, ".github", "workflows");
-    if (fs.existsSync(dir)) {
-      for (const f of fs.readdirSync(dir)) {
-        if (!/\.ya?ml$/.test(f)) continue;
-        const rel = `.github/workflows/${f}`;
-        try {
-          const wf = parseWorkflow(fs.readFileSync(path.join(repoPath, rel), "utf8"));
-          if (wf.root && jobsOf(wf).some((j) => j.isPublish)) found.add(rel);
-        } catch {
-          /* unparseable files are only reported if the glob matched them */
-        }
-      }
-    }
+/**
+ * Select publish workflows by CONTENT: a workflow qualifies only if a job calls
+ * npm-publish.yml, runs `npm publish` / `changeset publish` / a known publish
+ * script, or uses changesets/action. The glob is only the search space (plus,
+ * when `sniff`, every other workflow that qualifies). Glob matches that parse
+ * but do not publish to npm are returned in `skipped`, never touched.
+ * Unparseable glob matches stay in `files` so the parse error is reported.
+ */
+export function classifyWorkflows(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = true } = {}) {
+  const matched = new Set(matchWorkflowFiles(repoPath, glob));
+  const candidates = new Set(matched);
+  const dir = path.join(repoPath, ".github", "workflows");
+  if (sniff && fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir)) if (/\.ya?ml$/.test(f)) candidates.add(`.github/workflows/${f}`);
   }
-  return [...found].sort();
+  const files = [];
+  const skipped = [];
+  for (const rel of [...candidates].sort()) {
+    let publishes = false;
+    let parsed = true;
+    try {
+      const wf = parseWorkflow(fs.readFileSync(path.join(repoPath, rel), "utf8"));
+      if (wf.errors.length || !wf.root) parsed = false;
+      else publishes = jobsOf(wf).some((j) => j.isPublish);
+    } catch {
+      parsed = false;
+    }
+    if (publishes || (!parsed && matched.has(rel))) files.push(rel);
+    else if (matched.has(rel)) skipped.push(rel);
+  }
+  return { files, skipped };
 }
+
+/** Workflows to lint: those that publish to npm (see classifyWorkflows). */
+export function discoverPublishWorkflows(repoPath, glob = DEFAULT_PUBLISH_GLOB, opts = {}) {
+  return classifyWorkflows(repoPath, glob, opts).files;
+}
+
+export const skipMessage = (file) => `skipped ${file}: does not publish to npm`;
 
 export function lintRepo(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = glob === DEFAULT_PUBLISH_GLOB } = {}) {
   const info = engineInfo(repoPath);
-  const files = discoverPublishWorkflows(repoPath, glob, { sniff });
+  const { files, skipped } = classifyWorkflows(repoPath, glob, { sniff });
   const results = files.map((rel) => ({
     file: rel,
     findings: lintWorkflow({ text: fs.readFileSync(path.join(repoPath, rel), "utf8"), engineMajor: info.major }),
@@ -194,7 +213,7 @@ export function lintRepo(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = glob =
       } else owner.set(group, r.file);
     }
   }
-  return { files, results, engine: info };
+  return { files, skipped, results, engine: info };
 }
 
 function main(argv) {
@@ -207,7 +226,8 @@ function main(argv) {
       return 0;
     } else repo = argv[i];
   }
-  const { files, results, engine } = lintRepo(path.resolve(repo), glob);
+  const { files, skipped, results, engine } = lintRepo(path.resolve(repo), glob);
+  for (const f of skipped) console.log(`workflow-lint: INFO ${skipMessage(f)}`);
   if (files.length === 0) {
     console.log(`workflow-lint: no publish workflows matched ${glob}; nothing to check.`);
     return 0;
