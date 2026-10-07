@@ -1,3 +1,4 @@
+# NOTE: the FILENAME of this workflow is part of npm trusted publishing -- keep it.
 # .github/workflows/publish.yml -- single-package npm publish.
 # Copy this file as-is; adjust only the `with:` values.
 name: Publish to npm
@@ -11,7 +12,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: publish
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

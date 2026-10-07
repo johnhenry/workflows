@@ -24,6 +24,12 @@ name: npm-publish (reusable)
 # before; the tag/release step just skips with a warning (it never fails the
 # run). See this repo's README.
 
+# INVARIANT: this reusable workflow must NEVER declare a `concurrency:` block.
+# Callers set `concurrency: { group: publish-${{ github.ref }},
+# cancel-in-progress: false }`; the same group at two levels deadlocks the run
+# before it starts (the ci.yml@v1 lesson). Also: npm trusted publishing trusts
+# the CALLER's workflow filename, not this file's.
+
 on:
   workflow_call:
     inputs:

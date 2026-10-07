@@ -87,7 +87,7 @@ export function lintWorkflow({ text, engineMajor = null }) {
   if (!workflowConc.present) {
     // maybe set per job
     const anyJob = publishJobs.every((j) => concurrencyState(wf, j).present);
-    if (!anyJob) add(trig?.line ?? 1, "concurrency-no-cancel", "no `concurrency:` block; add `concurrency: { group: publish, cancel-in-progress: false }` so overlapping publishes queue instead of racing");
+    if (!anyJob) add(trig?.line ?? 1, "concurrency-no-cancel", "no `concurrency:` block; add `concurrency: { group: publish-${{ github.ref }}, cancel-in-progress: false }` so overlapping publishes queue instead of racing");
   }
   for (const job of publishJobs) {
     const c = concurrencyState(wf, job);
@@ -189,6 +189,7 @@ function main(argv) {
     return 0;
   }
   console.log(`workflow-lint: engines.node major = ${engine.major ?? "unknown"} (${engine.source})`);
+  console.log(`workflow-lint: INFO publish workflow filenames (trust-bound for npm trusted publishing; renaming one needs \`npm trust github\` re-trust): ${files.join(", ")}`);
   let failures = 0;
   for (const { file, findings } of results) {
     if (findings.length === 0) console.log(`ok   ${file}`);
