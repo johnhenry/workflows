@@ -105,7 +105,7 @@ export function convertWorkflowText(text, { engineMajor = null } = {}) {
   const jobHasConc = publishJobs.length > 0 && publishJobs.every((j) => valueOf(j.map, "concurrency"));
   if (concPair) {
     const span = pairSpan(wf, concPair);
-    let group = "publish";
+    let group = "publish-${{ github.ref }}";
     const v = concPair.value;
     if (isMap(v) && valueOf(v, "group")) {
       const g = valueOf(v, "group");
@@ -116,7 +116,7 @@ export function convertWorkflowText(text, { engineMajor = null } = {}) {
     if (run && RACE_RE.test(wf.lines.slice(run.start - 1, run.end).join("\n"))) start = run.start;
     edits.push({ start, end: span.end, lines: ["concurrency:", `  group: ${group}`, "  cancel-in-progress: false"] });
   } else if (!jobHasConc) {
-    onReplacement = [...onReplacement, "", "concurrency:", "  group: publish", "  cancel-in-progress: false"];
+    onReplacement = [...onReplacement, "", "concurrency:", "  group: publish-${{ github.ref }}", "  cancel-in-progress: false"];
   }
   edits.push({ start: onStart, end: onSpan.end, lines: onReplacement });
 
