@@ -46,7 +46,8 @@ for (const [name, rule, needle] of BAD) {
 
 test("every documented rule is covered by a bad fixture", () => {
   const covered = new Set(BAD.map((b) => b[1]));
-  for (const r of Object.keys(RULES)) assert.ok(covered.has(r), `no fixture for ${r}`);
+  const REPO_LEVEL = new Set(["concurrency-group-unique"]); // covered by the lintRepo test below
+  for (const r of Object.keys(RULES).filter((k) => !REPO_LEVEL.has(k))) assert.ok(covered.has(r), `no fixture for ${r}`);
 });
 
 test("node rule is skipped when engines is unknown or node-version is an expression", () => {
@@ -138,4 +139,19 @@ test("CLI: exit codes and line-numbered output", async () => {
   assert.equal(spawnSync(process.execPath, [script, good], { encoding: "utf8" }).status, 0);
   const none = tmpRepo({});
   assert.equal(spawnSync(process.execPath, [script, none], { encoding: "utf8" }).status, 0);
+});
+
+test("concurrency-group-unique: two publish workflows sharing a group fail, naming both files", () => {
+  const good = fs.readFileSync(new URL("./fixtures/lint/good-reusable.yml", import.meta.url), "utf8");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "cgu-"));
+  fs.mkdirSync(path.join(d, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(d, ".github/workflows/publish.yml"), good);
+  fs.writeFileSync(path.join(d, ".github/workflows/release.yml"), good);
+  const { results } = lintRepo(d);
+  const f = results.flatMap((r) => r.findings).filter((x) => x.rule === "concurrency-group-unique");
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /publish\.yml/);
+  assert.ok(RULES["concurrency-group-unique"]);
+  fs.writeFileSync(path.join(d, ".github/workflows/release.yml"), good.replace(/group: .*/, "group: release-${{ github.ref }}"));
+  assert.deepEqual(lintRepo(d).results.flatMap((r) => r.findings).filter((x) => x.rule === "concurrency-group-unique"), []);
 });

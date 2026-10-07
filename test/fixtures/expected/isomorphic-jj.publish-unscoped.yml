@@ -9,7 +9,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-unscoped-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
