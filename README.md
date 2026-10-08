@@ -8,7 +8,7 @@ tooling that keep ~47 consumer repos on one publish model.
 - `.github/workflows/npm-publish.yml` -- single-package npm publish: the
   idempotent `npm view` pre-flight guard, `--provenance`, and (since
   `v1.1.0`) the `v<version>` git tag + GitHub Release as a by-product.
-- `.github/workflows/pypi-publish.yml` -- single-package PyPI publish with
+- `.github/actions/pypi-publish` -- composite action: single-package PyPI publish with
   the same model (trusted publishing, PyPI version pre-flight, verification,
   `<package>-v<version>` tag + Release by-product). See "PyPI".
 - `.github/actions/create-release/action.yml` -- composite action: the
@@ -383,7 +383,7 @@ the run is a green no-op. Copy `templates/publish-pypi.yml` to
 `working-directory` for a subdirectory package), and bump
 `[project].version` in the PR that should release.
 
-`pypi-publish.yml@v1` does, in order:
+The `pypi-publish` composite action (`@v1`) does, in order:
 
 1. read name + version from `pyproject.toml` (static `[project].version`
    required; Python 3.11+ for `tomllib`);
@@ -401,17 +401,40 @@ the run is a green no-op. Copy `templates/publish-pypi.yml` to
 
 Inputs: `working-directory` (`.`), `python-version` (`3.12`), `package-name`
 (default: `[project].name`), `build-command`, `gate-commands` (default none),
-`create-release` (`true`), `verify-timeout` (`10`), `verify-interval` (`20`).
+`create-release` (`"true"`), `verify-timeout` (`10`), `verify-interval` (`20`).
 Outputs: `published`, `version`.
 
-The caller's job must grant `permissions: { contents: write, id-token: write }`
-and the caller must use `concurrency: { group: publish-pypi-${{ github.ref }},
-cancel-in-progress: false }` (the reusable workflow declares neither).
+Use it as a step of an **inline job** (not a reusable-workflow call):
+
+```yaml
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions: { contents: write, id-token: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: johnhenry/workflows/.github/actions/pypi-publish@v1
+        with:
+          package-name: my-package
+```
+
+The caller's workflow must use `concurrency: { group: publish-pypi-${{
+github.ref }}, cancel-in-progress: false }`.
+
+**Why a composite action and not a reusable workflow.** PyPI trusted
+publishing validates the OIDC token's `job_workflow_ref` claim against the
+registered publisher's repository and workflow filename. A reusable workflow
+from johnhenry/workflows has `job_workflow_ref` =
+`johnhenry/workflows/.github/workflows/pypi-publish.yml@...` while the
+repository is the caller's, so PyPI answers `invalid-publisher` (reusable
+workflows from other repositories are unsupported). A composite action runs
+inside the caller's job, so `job_workflow_ref` is the caller's own file. The old
+`pypi-publish.yml` reusable workflow is kept only as a deprecation shim that
+fails fast with this explanation.
 
 **The filename is part of the trust.** On pypi.org add a trusted publisher
 (owner, repository, the caller's workflow filename, optional environment).
-PyPI validates the *calling* workflow's filename, not `pypi-publish.yml`, so
-renaming the caller breaks publishing until the publisher is re-registered. A
+Renaming the caller breaks publishing until the publisher is re-registered. A
 repo converting from a tag-triggered PyPI workflow should keep its existing
 filename.
 
@@ -442,7 +465,7 @@ workflow that calls `npm-publish.yml`, runs `npm publish`, or uses
 | `concurrency-no-cancel` | no `concurrency` (workflow- or job-level), or `cancel-in-progress` is not `false` |
 | `permissions-id-token` | the publish job (npm or PyPI) lacks `id-token: write` |
 | `permissions-pull-requests` | a job using `changesets/action` lacks `pull-requests: write` (the permission alone is not enough: the repo setting "Allow GitHub Actions to create and approve pull requests" must also be on, which a workflow file cannot check) |
-| `permissions-contents-write` | a job calling `npm-publish.yml` or `pypi-publish.yml` lacks `contents: write` |
+| `permissions-contents-write` | a job calling `npm-publish.yml`, `pypi-publish.yml` or the `pypi-publish` action lacks `contents: write` |
 | `node-matches-engines` | a pinned `node-version` major differs from `engines.node` (root; for monorepos with no root `engines`, the highest workspace floor) |
 | `secrets-inherit` | a job calling `npm-publish.yml` lacks `secrets: inherit` |
 | `concurrency-group-unique` | two publish workflows in the repo use the same `concurrency.group` (the finding names both files) |
@@ -463,10 +486,10 @@ publishes nothing to npm or PyPI (a Rust-binary release workflow such as wsh's
 flagged.
 
 Since v1.4.0, workflows that use `pypa/gh-action-pypi-publish` or call
-`pypi-publish.yml` are **PyPI publish workflows** and are held to the same
+`pypi-publish.yml` or the `pypi-publish` action are **PyPI publish workflows** and are held to the same
 trigger / concurrency / permissions rules (push to `main` only, no tags or
 `release:`, `workflow_dispatch`, `cancel-in-progress: false`, `id-token:
-write`, and `contents: write` when calling `pypi-publish.yml`). The npm-only
+write`, and `contents: write` when using the `pypi-publish` action or `pypi-publish.yml`). The npm-only
 rules (`node-matches-engines`, `secrets-inherit`, the `verify-published`
 warning) do not apply to them. `convert-publish.mjs` stays npm-only and leaves
 PyPI workflows untouched.

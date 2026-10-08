@@ -14,7 +14,7 @@ const lint = (n, engineMajor = 26) => lintWorkflow({ text: fx(n), engineMajor })
 const lineOf = (text, needle) => text.split("\n").findIndex((l) => l.includes(needle)) + 1;
 
 test("good fixtures produce no findings", () => {
-  for (const n of ["good-reusable", "good-inline", "good-changesets", "good-pypi-reusable", "good-pypi-inline"]) assert.deepEqual(lint(n), [], n);
+  for (const n of ["good-reusable", "good-inline", "good-changesets", "good-pypi-reusable", "good-pypi-inline", "good-pypi-composite"]) assert.deepEqual(lint(n), [], n);
 });
 
 // [fixture, expected rule, text on the line the finding must point at]
@@ -35,6 +35,7 @@ const BAD = [
   ["bad-pypi-push-branches", "push-main-only", "branches: [main, next]"],
   ["bad-pypi-tag-trigger", "no-tag-trigger", 'tags: ["v*"]'],
   ["bad-pypi-no-contents-write", "permissions-contents-write", "permissions:"],
+  ["bad-pypi-composite-no-contents-write", "permissions-contents-write", "permissions:"],
   ["bad-pypi-no-id-token", "permissions-id-token", "permissions:"],
   ["bad-pypi-no-concurrency", "concurrency-no-cancel", "on:"],
   ["bad-pypi-cancel-true", "concurrency-no-cancel", "cancel-in-progress: true"],
@@ -214,6 +215,8 @@ test("verify-published: lintRepo reports warnings separately; CLI prints WARN bu
 test("PyPI: node-version/engines and npm verify-published rules never apply to PyPI jobs", () => {
   assert.deepEqual(lintWorkflow({ text: fx("good-pypi-inline"), engineMajor: 22 }), []);
   assert.deepEqual(lintWorkflow({ text: fx("good-pypi-reusable"), engineMajor: 22 }), []);
+  assert.deepEqual(lintWorkflow({ text: fx("good-pypi-composite"), engineMajor: 22 }), []);
+  assert.deepEqual(warn(fx("good-pypi-composite")), []);
   assert.deepEqual(warn(fx("good-pypi-inline")), []);
   assert.deepEqual(warn(fx("good-pypi-reusable")), []);
 });
@@ -221,6 +224,16 @@ test("PyPI: node-version/engines and npm verify-published rules never apply to P
 test("PyPI: reusable pypi-publish.yml callers do not need secrets: inherit", () => {
   assert.ok(!fx("good-pypi-reusable").includes("secrets:"));
   assert.deepEqual(lint("good-pypi-reusable"), []);
+});
+
+test("PyPI: the composite-action inline job is a publish job and still rejects release:/tags: triggers", () => {
+  const text = fx("good-pypi-composite");
+  const rel = lintWorkflow({ text: text.replace("  workflow_dispatch: {}\n", "  workflow_dispatch: {}\n  release:\n    types: [published]\n"), engineMajor: 26 }).map((f) => f.rule);
+  assert.deepEqual(rel, ["no-release-trigger"]);
+  const tags = lintWorkflow({ text: text.replace("    branches: [main]\n", "    branches: [main]\n    tags: ['v*']\n"), engineMajor: 26 }).map((f) => f.rule);
+  assert.deepEqual(tags, ["no-tag-trigger"]);
+  const d = tmpRepo({ ".github/workflows/release-py.yml": text });
+  assert.deepEqual(lintRepo(d).files, [".github/workflows/release-py.yml"]);
 });
 
 test("PyPI: lintRepo classifies pypa action / pypi-publish.yml workflows as publish workflows, not skipped", () => {
