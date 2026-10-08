@@ -90,6 +90,19 @@ on:
         required: false
         type: string
         default: "auto"
+      verify-timeout:
+        description: >-
+          Minutes to poll the registry for the just-published version
+          (`npm view <name>@<version> version`) before failing the job. The
+          tag/Release by-product is only created after verification passes.
+        required: false
+        type: string
+        default: "10"
+      verify-interval:
+        description: Seconds between registry polls during verification.
+        required: false
+        type: string
+        default: "20"
     secrets:
       NPM_TOKEN:
         description: >-
@@ -151,10 +164,34 @@ jobs:
             echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          npm publish --provenance --access public
+          set +e
+          npm publish --provenance --access public 2>&1 | tee "${RUNNER_TEMP:-/tmp}/npm-publish.log"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            # E404 on PUT usually means the package NAME does not exist yet:
+            # trusted publishing / provenance-only auth cannot create a package.
+            # (capture first: `| grep -q` under pipefail can fail on SIGPIPE)
+            NAME_LOOKUP=$(npm view "$PKG_NAME" name 2>&1 || true)
+            if grep -q 'E404' "${RUNNER_TEMP:-/tmp}/npm-publish.log" && grep -q 'E404' <<<"$NAME_LOOKUP"; then
+              echo "::error title=First publish of a new package name::$PKG_NAME does not exist on the npm registry yet, and npm trusted publishing cannot create a brand-new package name. Publish the first version once with a granular NPM_TOKEN that may create packages, or manually (npm publish --access public, with 2FA); then configure trusted publishing for the new package. See https://github.com/johnhenry/objectify/issues/9 and the 'Trusted publishing' section of the johnhenry/workflows README."
+            fi
+            exit "$STATUS"
+          fi
           echo "published=true" >> "$GITHUB_OUTPUT"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify the version reached the registry
+        if: steps.publish.outputs.published == 'true'
+        # `npm publish` has exited green for versions the registry never
+        # stored (aimatey-wrapper 0.2.0, objectify 0.0.2). Poll until it is
+        # visible; fail the job (and skip the tag/Release below) if it is not.
+        uses: johnhenry/workflows/.github/actions/verify-published@v1
+        with:
+          packages: ${{ steps.publish.outputs.name }}@${{ steps.publish.outputs.version }}
+          timeout-minutes: ${{ inputs.verify-timeout }}
+          interval-seconds: ${{ inputs.verify-interval }}
 
       - name: Tag and GitHub Release (by-product)
         if: steps.publish.outputs.published == 'true' && inputs.create-release

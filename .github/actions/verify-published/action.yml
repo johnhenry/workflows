@@ -1,0 +1,50 @@
+name: verify-published
+description: >-
+  Post-publish registry verification. Polls `npm view <name>@<version> version`
+  until every listed package version is visible on the npm registry, and fails
+  with a table of the ones that never appear. Guards against publishes that log
+  success but are silently dropped by the registry. Use it right after a
+  publish step (npm-publish.yml already does); for Changesets/monorepos use
+  `from-workspaces: true`. Needs Node on the runner (actions/setup-node).
+
+inputs:
+  packages:
+    description: >-
+      Newline-separated list of `name@version` (e.g. `@scope/pkg@1.2.3`) to
+      verify. Combined with `from-workspaces` when both are set.
+    required: false
+    default: ""
+  from-workspaces:
+    description: >-
+      "true" to also verify every non-private workspace package at the
+      versions currently in its package.json (root `workspaces` globs).
+      Guard the step with `if: steps.<changesets-step>.outputs.published == 'true'`
+      so it only runs when the publish actually happened.
+    required: false
+    default: "false"
+  timeout-minutes:
+    description: Minutes to keep polling before failing.
+    required: false
+    default: "10"
+  interval-seconds:
+    description: Seconds between polls.
+    required: false
+    default: "20"
+  working-directory:
+    description: Repo root used to resolve workspaces.
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Verify versions are on the registry
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: node "$ACTION_PATH/verify-published.mjs"
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        VERIFY_PACKAGES: ${{ inputs.packages }}
+        VERIFY_FROM_WORKSPACES: ${{ inputs.from-workspaces }}
+        VERIFY_TIMEOUT: ${{ inputs.timeout-minutes }}
+        VERIFY_INTERVAL: ${{ inputs.interval-seconds }}

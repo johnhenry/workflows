@@ -39,6 +39,40 @@ export const RULES = {
   "concurrency-group-unique": "when a repo has several publish workflows, each `concurrency.group` must be distinct (a shared group makes GitHub cancel queued runs)",
 };
 
+/** Warning-level rules: reported, never fail the run. */
+export const WARN_RULES = {
+  "verify-published": "publish job has no post-publish registry verification step (add johnhenry/workflows/.github/actions/verify-published@v1 after the publish step; npm-publish.yml does it itself)",
+};
+
+const VERIFY_USES_RE = /verify-published/;
+const VERIFY_RUN_RE = /verify-published/;
+
+/**
+ * Warning findings (severity "warning"): same shape as lintWorkflow's, kept
+ * separate so existing callers of lintWorkflow still see errors only.
+ * @param {{ text: string }} input
+ */
+export function warnWorkflow({ text }) {
+  const wf = parseWorkflow(text);
+  if (wf.errors.length || !wf.root) return [];
+  const out = [];
+  for (const job of jobsOf(wf).filter((j) => j.isPublish)) {
+    if (job.reusable) continue; // npm-publish.yml verifies by itself
+    const verified = job.steps.some(
+      (s) => (typeof s.uses === "string" && VERIFY_USES_RE.test(s.uses)) || (typeof s.run === "string" && VERIFY_RUN_RE.test(s.run)),
+    );
+    if (!verified) {
+      out.push({
+        line: job.line,
+        rule: "verify-published",
+        severity: "warning",
+        message: `job \`${job.id}\` publishes to npm but never verifies the versions reached the registry (publishes have been silently dropped while logging success); add a \`johnhenry/workflows/.github/actions/verify-published@v1\` step after the publish step (\`from-workspaces: true\` for Changesets repos)`,
+      });
+    }
+  }
+  return out;
+}
+
 /** Concurrency groups used by a workflow's publish jobs (workflow- or job-level): [{ group, line }]. */
 export function publishGroups(text) {
   const wf = parseWorkflow(text);
@@ -205,6 +239,7 @@ export function lintRepo(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = glob =
   const results = files.map((rel) => ({
     file: rel,
     findings: lintWorkflow({ text: fs.readFileSync(path.join(repoPath, rel), "utf8"), engineMajor: info.major }),
+    warnings: warnWorkflow({ text: fs.readFileSync(path.join(repoPath, rel), "utf8") }),
   }));
   // cross-file: concurrency groups must be distinct across publish workflows
   const owner = new Map();
@@ -226,7 +261,7 @@ function main(argv) {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--glob") glob = argv[++i];
     else if (argv[i] === "--help" || argv[i] === "-h") {
-      console.log("usage: lint-publish-workflow.mjs [repo-path] [--glob '<glob>']\n\nrules:\n" + Object.entries(RULES).map(([k, v]) => `  ${k.padEnd(28)} ${v}`).join("\n"));
+      console.log("usage: lint-publish-workflow.mjs [repo-path] [--glob '<glob>']\n\nrules:\n" + Object.entries(RULES).map(([k, v]) => `  ${k.padEnd(28)} ${v}`).join("\n") + "\n\nwarnings (do not fail):\n" + Object.entries(WARN_RULES).map(([k, v]) => `  ${k.padEnd(28)} ${v}`).join("\n"));
       return 0;
     } else repo = argv[i];
   }
@@ -239,14 +274,21 @@ function main(argv) {
   console.log(`workflow-lint: engines.node major = ${engine.major ?? "unknown"} (${engine.source})`);
   console.log(`workflow-lint: INFO publish workflow filenames (trust-bound for npm trusted publishing; renaming one needs \`npm trust github\` re-trust): ${files.join(", ")}`);
   let failures = 0;
-  for (const { file, findings } of results) {
+  let warnings = 0;
+  for (const { file, findings, warnings: warns = [] } of results) {
     if (findings.length === 0) console.log(`ok   ${file}`);
+    for (const w of warns) {
+      warnings++;
+      console.log(`${file}:${w.line}: WARN [${w.rule}] ${w.message}`);
+      if (process.env.GITHUB_ACTIONS) console.log(`::warning file=${file},line=${w.line},title=${w.rule}::${w.message}`);
+    }
     for (const f of findings) {
       failures++;
       console.log(`${file}:${f.line}: [${f.rule}] ${f.message}`);
       if (process.env.GITHUB_ACTIONS) console.log(`::error file=${file},line=${f.line},title=${f.rule}::${f.message}`);
     }
   }
+  if (warnings) console.log(`\nworkflow-lint: ${warnings} warning(s) (not failing). See the "Verification" section of the johnhenry/workflows README.`);
   if (failures) {
     console.log(`\nworkflow-lint: ${failures} problem(s). See the "main is the release branch" section of the johnhenry/workflows README; \`scripts/convert-publish.mjs\` fixes most of these automatically.`);
     return 1;

@@ -10,6 +10,15 @@
 #
 # package.json needs:  "release": "npm run build && changeset publish"
 # (`changeset publish` skips versions already on the registry, so re-runs are safe).
+#
+# Verification: the last step polls the registry (`npm view name@version`) for
+# every non-private workspace package after a real publish and fails the job if
+# one never appears -- publishes have been silently dropped while logging
+# success. It runs only when changesets/action actually published
+# (`steps.changesets.outputs.published == 'true'`). Tune with `timeout-minutes`
+# (default 10) / `interval-seconds` (default 20). Note: changesets/action
+# creates the tags/Releases itself, so here verification is a failing check
+# rather than a gate on them; re-dispatch the workflow to retry a dropped version.
 name: Publish to npm
 
 # Publish model: main is the release branch. See johnhenry/workflows' README.
@@ -49,6 +58,7 @@ jobs:
           npm test
 
       - name: Version PR or publish
+        id: changesets
         uses: changesets/action@v1
         with:
           publish: npm run release
@@ -59,3 +69,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
+
+      - name: Verify published versions are on the registry
+        if: steps.changesets.outputs.published == 'true'
+        uses: johnhenry/workflows/.github/actions/verify-published@v1
+        with:
+          from-workspaces: true
+          # timeout-minutes: 10
+          # interval-seconds: 20

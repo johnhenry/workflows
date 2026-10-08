@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { lintWorkflow, lintRepo, RULES } from "../scripts/lint-publish-workflow.mjs";
+import { lintWorkflow, warnWorkflow, lintRepo, RULES, WARN_RULES } from "../scripts/lint-publish-workflow.mjs";
 import { engineInfo, globToRegExp, matchWorkflowFiles } from "../scripts/lib/repo-info.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -126,11 +127,11 @@ test("templates lint clean", () => {
   for (const t of ["publish", "publish-changesets"]) {
     const text = fs.readFileSync(path.join(here, "..", "templates", `${t}.yml`), "utf8");
     assert.deepEqual(lintWorkflow({ text, engineMajor: 26 }), [], t);
+    assert.deepEqual(warnWorkflow({ text }), [], `${t} must also be warning-free (verification wired)`);
   }
 });
 
 test("CLI: exit codes and line-numbered output", async () => {
-  const { spawnSync } = await import("node:child_process");
   const script = path.join(here, "..", "scripts", "lint-publish-workflow.mjs");
   const bad = tmpRepo({ ".github/workflows/publish.yml": fx("bad-release-trigger") });
   const r = spawnSync(process.execPath, [script, bad], { encoding: "utf8" });
@@ -155,4 +156,50 @@ test("concurrency-group-unique: two publish workflows sharing a group fail, nami
   assert.ok(RULES["concurrency-group-unique"]);
   fs.writeFileSync(path.join(d, ".github/workflows/release.yml"), good.replace(/group: .*/, "group: release-${{ github.ref }}"));
   assert.deepEqual(lintRepo(d).results.flatMap((r) => r.findings).filter((x) => x.rule === "concurrency-group-unique"), []);
+});
+
+// --- warning-level rules (never fail the run) -------------------------------
+const warn = (text) => warnWorkflow({ text });
+
+test("verify-published: inline and changesets publish jobs without a verification step warn (line = job)", () => {
+  for (const n of ["good-inline", "good-changesets"]) {
+    const w = warn(fx(n));
+    assert.equal(w.length, 1, n);
+    assert.equal(w[0].rule, "verify-published");
+    assert.equal(w[0].severity, "warning");
+    assert.equal(w[0].line, lineOf(fx(n), "  publish:"));
+    assert.match(w[0].message, /verify-published/);
+  }
+  assert.ok(WARN_RULES["verify-published"]);
+  assert.equal(RULES["verify-published"], undefined, "warning rules are listed separately from error rules");
+});
+
+test("verify-published: reusable npm-publish.yml callers are exempt (it verifies itself)", () => {
+  assert.deepEqual(warn(fx("good-reusable")), []);
+});
+
+test("verify-published: a verify-published action step or a script step silences the warning", () => {
+  const act = fx("good-inline").replace("      - run: npm publish --provenance --access public", "      - run: npm publish --provenance --access public\n      - uses: johnhenry/workflows/.github/actions/verify-published@v1\n        with:\n          packages: x@1.0.0");
+  assert.deepEqual(warn(act), []);
+  const script = fx("good-inline").replace("      - run: npm publish --provenance --access public", "      - run: npm publish --provenance --access public\n      - run: node scripts/verify-published.mjs pkg");
+  assert.deepEqual(warn(script), []);
+});
+
+test("verify-published: warnings do not affect error findings, and non-publish workflows never warn", () => {
+  assert.deepEqual(lint("good-inline"), []);
+  const t = "on:\n  push:\n    branches: [main]\n  workflow_dispatch:\njobs:\n  docs:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm run docs\n";
+  assert.deepEqual(warn(t), []);
+});
+
+test("verify-published: lintRepo reports warnings separately; CLI prints WARN but exits 0", () => {
+  const d = tmpRepo({ ".github/workflows/publish.yml": fx("good-inline") });
+  const { results } = lintRepo(d);
+  assert.deepEqual(results[0].findings, []);
+  assert.equal(results[0].warnings.length, 1);
+  const r = spawnSync(process.execPath, [path.join(here, "..", "scripts", "lint-publish-workflow.mjs"), d], { encoding: "utf8", env: { ...process.env, GITHUB_ACTIONS: "true" } });
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /publish\.yml:\d+: WARN \[verify-published\]/);
+  assert.match(r.stdout, /::warning file=\.github\/workflows\/publish\.yml,line=\d+,title=verify-published::/);
+  assert.doesNotMatch(r.stdout, /::error/);
+  assert.match(r.stdout, /1 warning/);
 });
