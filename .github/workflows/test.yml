@@ -26,7 +26,7 @@ jobs:
       - run: npm test
       - name: Lint the caller templates with the linter
         run: |
-          for t in publish publish-changesets; do
+          for t in publish publish-changesets publish-pypi; do
             d=$(mktemp -d)
             mkdir -p "$d/.github/workflows"
             cp "templates/$t.yml" "$d/.github/workflows/publish.yml"

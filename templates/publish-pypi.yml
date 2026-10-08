@@ -1,0 +1,33 @@
+# NOTE: the FILENAME of this workflow is part of PyPI trusted publishing -- keep it.
+# .github/workflows/publish-pypi.yml -- PyPI publish ("main is the release branch").
+# Copy this file; adjust only the `with:` values. On pypi.org register the
+# trusted publisher with this repo + this workflow filename.
+name: Publish to PyPI
+
+# A push to main publishes only if pyproject.toml's version isn't on PyPI yet
+# (otherwise a clean no-op), then tags <package-name>-v<version> and creates a
+# GitHub Release. See johnhenry/workflows' README ("PyPI").
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    permissions:
+      contents: write # tag + GitHub Release by-product of pypi-publish.yml
+      id-token: write # PyPI trusted publishing (OIDC)
+    uses: johnhenry/workflows/.github/workflows/pypi-publish.yml@v1
+    with:
+      package-name: my-package # PyPI name; also the tag prefix (my-package-vX.Y.Z)
+      gate-commands: |
+        pip install pytest -e .
+        python -m pytest
+      # working-directory: packages/py   # pyproject.toml lives in a subdirectory
+      # python-version: "3.12"           # must be 3.11+
+      # build-command: python -m build
+      # create-release: false            # skip the tag + GitHub Release

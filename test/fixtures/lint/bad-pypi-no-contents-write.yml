@@ -1,0 +1,19 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    permissions:
+      id-token: write
+    uses: johnhenry/workflows/.github/workflows/pypi-publish.yml@v1
+    with:
+      package-name: my-package
+      gate-commands: python -m pytest

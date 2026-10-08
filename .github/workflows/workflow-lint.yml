@@ -1,6 +1,6 @@
 name: workflow-lint (reusable)
 
-# Reusable `workflow_call` target: fails when a repo's npm publish workflows
+# Reusable `workflow_call` target: fails when a repo's npm/PyPI publish workflows
 # drift from the family's single publish model ("main is the release branch").
 # Rules (see scripts/lint-publish-workflow.mjs and the README):
 #   - no `release:` trigger, no `push.tags` trigger
@@ -25,7 +25,8 @@ on:
         description: >-
           Glob (relative to the repo root; `*` and `{a,b}` supported) of the
           publish workflow files to lint. Workflows that call npm-publish.yml
-          or run `npm publish` / changesets/action are linted regardless of
+          or pypi-publish.yml, run `npm publish` / changesets/action, or use
+          pypa/gh-action-pypi-publish are linted regardless of
           name when this is left at the default.
         required: false
         type: string

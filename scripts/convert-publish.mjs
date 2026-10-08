@@ -48,7 +48,7 @@ import {
   majorOfVersion,
 } from "./lib/workflow-model.mjs";
 import { engineInfo, DEFAULT_PUBLISH_GLOB } from "./lib/repo-info.mjs";
-import { classifyWorkflows, publishGroups, skipMessage } from "./lint-publish-workflow.mjs";
+import { classifyWorkflows, publishGroups } from "./lint-publish-workflow.mjs";
 
 export const MARKER = "# Publish model:";
 const MARKER_LINES = [
@@ -357,8 +357,8 @@ export function convertRepo(repoPath, { dryRun = false, glob = DEFAULT_PUBLISH_G
   const files = [];
   const warnings = [];
   if (info.major == null) warnings.push(`no engines.node found (${info.source}); node-version left as is`);
-  const { files: rels, skipped } = classifyWorkflows(repoPath, glob, { sniff: glob === DEFAULT_PUBLISH_GLOB });
-  const infos = skipped.map(skipMessage);
+  const { files: rels, skipped } = classifyWorkflows(repoPath, glob, { sniff: glob === DEFAULT_PUBLISH_GLOB, npmOnly: true });
+  const infos = skipped.map((f) => `skipped ${f}: does not publish to npm`);
   const texts = new Map(rels.map((rel) => [rel, fs.readFileSync(path.join(repoPath, rel), "utf8")]));
   for (const rel of rels) {
     const before = texts.get(rel);
