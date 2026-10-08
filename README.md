@@ -100,6 +100,13 @@ Permissions by job type (write includes read):
 | Inline `npm publish` job | `write` | `read` is enough | -- |
 | `changesets/action` (Flow B) | `write` | `write` (bump commit, tags, Releases) | `write` (Version Packages PR) |
 
+`changesets/action` additionally needs the **repository setting** Settings >
+Actions > General > "Allow GitHub Actions to create and approve pull requests"
+(otherwise the run fails at `creating pull request` with "GitHub Actions is not
+permitted to create or approve pull requests" even with `pull-requests: write`).
+Enable it with `gh api -X PUT repos/<owner>/<repo>/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true`.
+A workflow file cannot check that setting; the lint only enforces the permission.
+
 ### Trusted publishing (OIDC) -- the filename is part of the trust
 
 As of 2026-10-07 npm trusted publishing is live for 141 of the 143
@@ -261,6 +268,7 @@ workflow that calls `npm-publish.yml`, runs `npm publish`, or uses
 | `workflow-dispatch` | there is no `workflow_dispatch` trigger |
 | `concurrency-no-cancel` | no `concurrency` (workflow- or job-level), or `cancel-in-progress` is not `false` |
 | `permissions-id-token` | the publish job lacks `id-token: write` |
+| `permissions-pull-requests` | a job using `changesets/action` lacks `pull-requests: write` (the permission alone is not enough: the repo setting "Allow GitHub Actions to create and approve pull requests" must also be on, which a workflow file cannot check) |
 | `permissions-contents-write` | a job calling `npm-publish.yml` lacks `contents: write` |
 | `node-matches-engines` | a pinned `node-version` major differs from `engines.node` (root; for monorepos with no root `engines`, the highest workspace floor) |
 | `secrets-inherit` | a job calling `npm-publish.yml` lacks `secrets: inherit` |

@@ -30,6 +30,7 @@ const BAD = [
   ["bad-node-mismatch", "node-matches-engines", 'node-version: "24"'],
   ["bad-inline-node", "node-matches-engines", "node-version: 24"],
   ["bad-no-secrets-inherit", "secrets-inherit", "publish:"],
+  ["bad-changesets-no-pr-write", "permissions-pull-requests", "permissions:"],
 ];
 for (const [name, rule, needle] of BAD) {
   test(`${name} -> ${rule} (line-numbered)`, () => {
