@@ -15,7 +15,6 @@ const wf = parseDocument(fs.readFileSync(wfPath, "utf8")).toJS();
 const steps = wf.jobs.publish.steps;
 const stepScript = (name) => steps.find((s) => s.name === name).run;
 const PUBLISH = stepScript("Publish (idempotent)");
-const RELEASE = stepScript("Tag and GitHub Release (by-product)");
 
 function sandbox({ version = "1.2.3", name = "@johnhenry/pkg" } = {}) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "np-"));
@@ -43,11 +42,6 @@ function sandbox({ version = "1.2.3", name = "@johnhenry/pkg" } = {}) {
   return { run };
 }
 
-const relEnv = (extra = {}) => ({
-  GH_TOKEN: "t", GH_REPO: "o/r", PKG_NAME: "@johnhenry/pkg", PKG_VERSION: "1.2.3", RELEASE_NOTES: "auto",
-  DEFAULT_BRANCH: "main", GITHUB_REF_NAME: "main", GITHUB_SHA: "deadbeef", ...extra,
-});
-
 test("publish: new version is published and reported", () => {
   const r = sandbox().run(PUBLISH, { FAKE_NPM_HAS_VERSION: "0" });
   assert.equal(r.status, 0, r.stderr);
@@ -64,56 +58,6 @@ test("publish: version already on the registry is a clean skip (exit 0, publishe
   assert.match(r.stdout, /::notice title=Already published::/);
 });
 
-test("release: creates v<version> at the pushed commit with generated notes", () => {
-  const r = sandbox().run(RELEASE, relEnv());
-  assert.equal(r.status, 0, r.stderr);
-  const call = r.calls.find((c) => c.startsWith("gh "));
-  assert.equal(call, "gh release create v1.2.3 --target deadbeef --title v1.2.3 --generate-notes");
-});
-
-test("release: release-notes none writes a one-line body instead", () => {
-  const r = sandbox().run(RELEASE, relEnv({ RELEASE_NOTES: "none" }));
-  const call = r.calls.find((c) => c.startsWith("gh "));
-  assert.doesNotMatch(call, /--generate-notes/);
-  assert.match(call, /--notes Published to npm: https:\/\/www\.npmjs\.com\/package\/@johnhenry\/pkg\/v\/1\.2\.3/);
-});
-
-test("release: prerelease versions are flagged --prerelease", () => {
-  const r = sandbox().run(RELEASE, relEnv({ PKG_VERSION: "2.0.0-rc.1" }));
-  assert.match(r.calls.find((c) => c.startsWith("gh ")), /v2\.0\.0-rc\.1 .*--prerelease/);
-});
-
-test("release: existing tag -> skip cleanly, gh never called", () => {
-  const r = sandbox().run(RELEASE, relEnv({ FAKE_TAG_EXISTS: "1" }));
-  assert.equal(r.status, 0);
-  assert.ok(!r.calls.some((c) => c.startsWith("gh ")));
-  assert.match(r.stdout, /::notice title=Tag exists::/);
-});
-
-test("release: tag created by a racing run (gh says already exists) -> notice, not failure", () => {
-  const r = sandbox().run(RELEASE, relEnv({ FAKE_GH: "exists" }));
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /::notice title=Tag exists::/);
-});
-
-test("release: caller without contents: write -> warning, exit 0 (so moving v1 is safe)", () => {
-  const r = sandbox().run(RELEASE, relEnv({ FAKE_GH: "forbidden" }));
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /::warning title=Tag\/release skipped::.*contents: write/);
-});
-
-test("release: an unexpected gh error still fails the step loudly", () => {
-  const r = sandbox().run(RELEASE, relEnv({ FAKE_GH: "boom" }));
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /kaboom/);
-});
-
-test("release: dispatch from a non-default branch does not tag", () => {
-  const r = sandbox().run(RELEASE, relEnv({ GITHUB_REF_NAME: "feature/x" }));
-  assert.equal(r.status, 0);
-  assert.ok(!r.calls.some((c) => c.startsWith("gh ")));
-});
-
 test("workflow contract: inputs, outputs, gating, no job-level permissions", () => {
   const i = wf.on.workflow_call.inputs;
   assert.deepEqual(Object.keys(i).sort(), ["create-release", "gate-commands", "install-command", "node-cache", "node-version", "release-notes", "working-directory"]);
@@ -126,6 +70,9 @@ test("workflow contract: inputs, outputs, gating, no job-level permissions", () 
   const rel = steps.find((s) => s.name?.startsWith("Tag and GitHub Release"));
   assert.match(rel.if, /published == 'true'/);
   assert.match(rel.if, /inputs\.create-release/);
+  assert.equal(rel.uses, "johnhenry/workflows/.github/actions/create-release@v1", "one implementation: the by-product step is the composite action");
+  assert.equal(rel.run, undefined);
+  assert.equal(rel.with.notes, "${{ inputs.release-notes }}");
   assert.ok(wf.on.workflow_call.secrets.NPM_TOKEN.required);
 });
 

@@ -1,0 +1,107 @@
+name: create-release
+description: >-
+  Create the git tag <tag-prefix><version> and a GitHub Release for it -- the
+  "by-product" half of the family's "main is the release branch" publish
+  model. Never fails for the expected cases (tag exists, non-default branch,
+  caller lacks contents: write). Use it as a step AFTER a successful
+  `npm publish` in an inline publish job; npm-publish.yml uses it too.
+
+inputs:
+  version:
+    description: Version being released (e.g. 1.2.3). The tag is <tag-prefix><version>.
+    required: true
+  tag-prefix:
+    description: Prefix for the tag name.
+    required: false
+    default: v
+  notes:
+    description: >-
+      "auto" generates release notes from merged PRs (`gh release create
+      --generate-notes`); "none" writes a one-line body linking the npm page.
+    required: false
+    default: auto
+  prerelease:
+    description: >-
+      "auto" flags versions containing "-" (1.0.0-rc.1) as pre-releases;
+      "true" / "false" force it.
+    required: false
+    default: auto
+  working-directory:
+    description: Directory containing the package.json (used for the package name when notes is "none").
+    required: false
+    default: "."
+  package-name:
+    description: npm package name for the notes=none body. Defaults to package.json's name in working-directory.
+    required: false
+    default: ""
+
+outputs:
+  created:
+    description: '"true" if this run created the tag + Release, otherwise "false" (skipped).'
+    value: ${{ steps.release.outputs.created }}
+  tag:
+    description: The tag name this action targeted.
+    value: ${{ steps.release.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Tag and GitHub Release
+      id: release
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      # Skip rules (all exit 0): not on the default branch (notice), tag
+      # already exists (notice), caller lacks `contents: write` (warning). Any
+      # other `gh` failure fails the step -- the package is already on npm by
+      # this point, so re-run to retry.
+      run: |
+        TAG="${TAG_PREFIX}${VERSION}"
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "created=false" >> "$GITHUB_OUTPUT"
+        if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+          echo "::notice title=Tag/release skipped::running on $GITHUB_REF_NAME, not the default branch ($DEFAULT_BRANCH); not tagging."
+          exit 0
+        fi
+        if [ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]; then
+          echo "::notice title=Tag exists::$TAG already exists; not creating a release."
+          exit 0
+        fi
+        ARGS=(release create "$TAG" --target "$GITHUB_SHA" --title "$TAG")
+        if [ "$NOTES" = "none" ]; then
+          if [ -z "$PACKAGE_NAME" ] && [ -f package.json ]; then
+            PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || true)
+          fi
+          if [ -n "$PACKAGE_NAME" ]; then
+            ARGS+=(--notes "Published to npm: https://www.npmjs.com/package/${PACKAGE_NAME}/v/${VERSION}")
+          else
+            ARGS+=(--notes "Published to npm: ${VERSION}")
+          fi
+        else
+          ARGS+=(--generate-notes)
+        fi
+        case "$PRERELEASE" in
+          true) ARGS+=(--prerelease) ;;
+          false) ;;
+          *) case "$VERSION" in *-*) ARGS+=(--prerelease) ;; esac ;;
+        esac
+        if OUT=$(gh "${ARGS[@]}" 2>&1); then
+          echo "$OUT"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Released::$TAG created."
+        elif grep -qiE 'resource not accessible|HTTP 403|must have push access|permission' <<<"$OUT"; then
+          echo "::warning title=Tag/release skipped::the job lacks 'contents: write', so $TAG was not created. Add 'permissions: { contents: write, id-token: write }' to the publish job (for npm-publish.yml: to the job that calls it)."
+        elif grep -qiE 'already exists|already_exists|tag_name.*(exists|already)' <<<"$OUT"; then
+          echo "::notice title=Tag exists::$TAG already exists; not creating a release."
+        else
+          echo "$OUT" >&2
+          exit 1
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        VERSION: ${{ inputs.version }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        NOTES: ${{ inputs.notes }}
+        PRERELEASE: ${{ inputs.prerelease }}
+        PACKAGE_NAME: ${{ inputs.package-name }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}

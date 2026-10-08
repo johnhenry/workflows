@@ -8,6 +8,9 @@ tooling that keep ~47 consumer repos on one publish model.
 - `.github/workflows/npm-publish.yml` -- single-package npm publish: the
   idempotent `npm view` pre-flight guard, `--provenance`, and (since
   `v1.1.0`) the `v<version>` git tag + GitHub Release as a by-product.
+- `.github/actions/create-release/action.yml` -- composite action: the
+  `v<version>` tag + GitHub Release by-product, for inline publish jobs
+  (`npm-publish.yml` uses it too, so there is one implementation).
 - `.github/workflows/workflow-lint.yml` -- fails a repo's CI when its
   publish workflow drifts from the model below.
 - `.github/workflows/ci.yml` -- the family's test workflow: concurrency
@@ -235,6 +238,55 @@ bounded by what the **calling** job grants, so the caller must declare
 and GitHub narrows the token silently if the caller doesn't. (`contents: write`
 works the same way.)
 
+## `create-release` -- tag + Release for inline publish jobs
+
+Repos whose publish job is inline (not a call to `npm-publish.yml`) get the same
+tag + GitHub Release by-product from a composite action. `npm-publish.yml`
+itself calls it, so both paths share one implementation and one set of skip
+rules.
+
+```yaml
+jobs:
+  publish:
+    permissions:
+      contents: write # tag + GitHub Release by-product
+      id-token: write # npm provenance
+    steps:
+      # ... checkout, setup-node, gate ...
+      - name: Publish
+        id: publish
+        run: npm publish --provenance --access public
+      - name: Tag and GitHub Release (by-product)
+        if: steps.publish.outcome == 'success'   # + a "was this version new?" check, see below
+        uses: johnhenry/workflows/.github/actions/create-release@v1
+        with:
+          version: ${{ steps.release-probe.outputs.version }}
+```
+
+| Input | Default | Purpose |
+|---|---|---|
+| `version` | required | Version being released; tag is `<tag-prefix><version>`. |
+| `tag-prefix` | `v` | Tag prefix. |
+| `notes` | `auto` | `auto` = `gh release create --generate-notes`; `none` = one-line body linking the npm page. |
+| `prerelease` | `auto` | `auto` flags versions containing `-`; `true` / `false` force it. |
+| `working-directory` | `.` | Where `package.json` lives (package name for `notes: none`). |
+| `package-name` | package.json's | Override the name used in the `notes: none` body. |
+
+Outputs: `created` (`"true"` only if this run created the Release) and `tag`.
+
+Skip rules (the step still succeeds): not running on the default branch
+(notice), the tag already exists (notice), the job lacks `contents: write`
+(warning). Any other `gh` failure fails the step loudly -- the package is
+already on npm, so re-run to retry. The action needs the repo checked out
+(`actions/checkout`) because it asks `git ls-remote` about the tag.
+
+The action does not know whether *this run* published: a publish step that
+no-ops on an already-published version also succeeds. Guard it on something
+that does. `scripts/convert-publish.mjs` inserts an `npm view` probe step
+(`id: release-probe`, outputs `new` and `version`) before the publish step and
+guards the action with
+`steps.release-probe.outputs.new == 'true' && steps.<publish>.outcome == 'success'`.
+
 ## `workflow-lint.yml` -- keep a repo on the model
 
 Add one job to the repo's `ci.yml` (no inputs required):
@@ -293,7 +345,13 @@ get only `id-token: write`), sets `node-version` from `engines`, preserves
 `workflow_dispatch` inputs, removes comments about the old release race, and
 adds a `workflow-lint` job to `ci.yml` (**creating a minimal `ci.yml` if the repo has none**, as it did for isomorphic-jj). It
 prints a per-file diff summary, never rewrites the body of an inline publish
-job, and is idempotent. It prints `WARNING` lines for things it will not fix
+job, and is idempotent. For inline jobs that run `npm publish` it also inserts
+the `create-release` by-product (a version probe before the publish step, the
+composite action after it, guarded on the publish step's outcome; the publish
+step gets `id: publish` if it has none) and raises the job to
+`contents: write`. A job that already creates its own release (`create-release`,
+`gh release create`, ...) is left as is, and monorepo (`npm publish -w`) /
+changesets jobs are skipped. It prints `WARNING` lines for things it will not fix
 -- notably steps or `gate-commands` that compare against a tag ref
 (`GITHUB_REF#refs/tags/...`), which can never hold on a push to main and must
 be edited by hand. It uses the same content-based selection as the linter: workflows that do not publish to npm are left byte-for-byte untouched and listed as `INFO skipped <file>: does not publish to npm`. `--check` exits 1 if anything would change.
