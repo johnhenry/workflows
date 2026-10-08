@@ -24,6 +24,14 @@
 // logic, ...); it only inserts steps and prints warnings where a body still
 // assumes a tag ref.
 // Idempotent: a second run changes nothing.
+//
+// Guidance for repos with hand-rolled / staggered publish scripts (aimatey,
+// browsermesh, optical-artifact-transport): an "already published" matcher on
+// `npm publish` output must cover npm's 409 forms, not just "previously
+// published": E409, "previously staged version", EPUBLISHCONFLICT, and
+// "cannot publish over the previously published". npm stages a publish before
+// `npm view` can see it, so a queued duplicate run passes the `npm view`
+// pre-flight and then 409s (workflows#14). Treat any of them as skip + green.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

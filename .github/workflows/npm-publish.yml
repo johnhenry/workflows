@@ -169,6 +169,19 @@ jobs:
           STATUS=${PIPESTATUS[0]}
           set -e
           if [ "$STATUS" -ne 0 ]; then
+            # npm stages a publish before `npm view` can see it, so a queued
+            # duplicate run passes the guard above and then 409s. That means
+            # the version is (being) published by someone else: treat it as
+            # already published (green, published=false) but flag conflict=true
+            # so the verify + tag/release steps still run -- the first run may
+            # have died before tagging. (Any real failure to land is caught by
+            # verify-published.)
+            if grep -qiE 'E409|previously staged|EPUBLISHCONFLICT|cannot publish over the previously published' "${RUNNER_TEMP:-/tmp}/npm-publish.log"; then
+              echo "::notice title=Already published::$PKG_NAME@$PKG_VERSION was already published/staged (npm 409 conflict); treating as published and verifying."
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              echo "conflict=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             # E404 on PUT usually means the package NAME does not exist yet:
             # trusted publishing / provenance-only auth cannot create a package.
             # (capture first: `| grep -q` under pipefail can fail on SIGPIPE)
@@ -183,7 +196,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Verify the version reached the registry
-        if: steps.publish.outputs.published == 'true'
+        if: steps.publish.outputs.published == 'true' || steps.publish.outputs.conflict == 'true'
         # `npm publish` has exited green for versions the registry never
         # stored (aimatey-wrapper 0.2.0, objectify 0.0.2). Poll until it is
         # visible; fail the job (and skip the tag/Release below) if it is not.
@@ -194,7 +207,7 @@ jobs:
           interval-seconds: ${{ inputs.verify-interval }}
 
       - name: Tag and GitHub Release (by-product)
-        if: steps.publish.outputs.published == 'true' && inputs.create-release
+        if: (steps.publish.outputs.published == 'true' || steps.publish.outputs.conflict == 'true') && inputs.create-release
         # One implementation, shared with inline publish jobs. Never fails the
         # run for the expected cases: missing `contents: write` on the caller
         # (warning), tag already exists (notice), or a dispatch from a
