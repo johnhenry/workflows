@@ -135,12 +135,39 @@ runs:
         bash -e -o pipefail -c "$BUILD_COMMAND"
         ls -l dist
 
+    # Not pypa/gh-action-pypi-publish: that action resolves its Docker image from
+    # GITHUB_ACTION_REPOSITORY, which inside a composite action is THIS repo
+    # (ghcr.io/johnhenry/workflows:v1 -> "denied"). So do what it does: mint a
+    # short-lived PyPI API token from the job's GitHub OIDC token (trusted
+    # publishing; no stored secret) and upload with twine.
     - name: Publish to PyPI (trusted publishing)
       if: steps.check.outputs.exists == 'false'
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        packages-dir: ${{ inputs.working-directory }}/dist
-        skip-existing: true
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        python -m pip install --upgrade twine
+        PYPI_TOKEN=$(python - <<'PY'
+        import json, os, sys, urllib.parse, urllib.request
+
+        def call(req):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return json.load(r)
+            except urllib.error.HTTPError as e:
+                sys.exit(f"::error title=PyPI trusted publishing::{req.full_url} -> HTTP {e.code}: {e.read().decode()[:500]}")
+
+        url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+        if not url:
+            sys.exit("::error title=No OIDC token::missing ACTIONS_ID_TOKEN_REQUEST_URL; the calling job needs `permissions: id-token: write`")
+        aud = call(urllib.request.Request("https://pypi.org/_/oidc/audience"))["audience"]
+        sep = "&" if "?" in url else "?"
+        jwt = call(urllib.request.Request(f"{url}{sep}audience={urllib.parse.quote(aud)}", headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]}))["value"]
+        minted = call(urllib.request.Request("https://pypi.org/_/oidc/mint-token", data=json.dumps({"token": jwt}).encode(), headers={"Content-Type": "application/json"}, method="POST"))
+        print(minted["token"])
+        PY
+        )
+        echo "::add-mask::$PYPI_TOKEN"
+        TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_TOKEN" python -m twine upload --non-interactive --skip-existing dist/*
 
     - name: Verify the version reached PyPI
       if: steps.check.outputs.exists == 'false'
