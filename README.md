@@ -8,6 +8,9 @@ tooling that keep ~47 consumer repos on one publish model.
 - `.github/workflows/npm-publish.yml` -- single-package npm publish: the
   idempotent `npm view` pre-flight guard, `--provenance`, and (since
   `v1.1.0`) the `v<version>` git tag + GitHub Release as a by-product.
+- `.github/workflows/pypi-publish.yml` -- single-package PyPI publish with
+  the same model (trusted publishing, PyPI version pre-flight, verification,
+  `<package>-v<version>` tag + Release by-product). See "PyPI".
 - `.github/actions/create-release/action.yml` -- composite action: the
   `v<version>` tag + GitHub Release by-product, for inline publish jobs
   (`npm-publish.yml` uses it too, so there is one implementation).
@@ -21,8 +24,9 @@ tooling that keep ~47 consumer repos on one publish model.
   cancellation, an OS/Node matrix, and an optional generated-artifact
   drift gate.
 - `.github/workflows/codeql.yml` / `dependency-review.yml` -- security jobs.
-- `templates/publish.yml` / `templates/publish-changesets.yml` -- copy-paste
-  caller workflows (single package / monorepo).
+- `templates/publish.yml` / `templates/publish-changesets.yml` /
+  `templates/publish-pypi.yml` -- copy-paste caller workflows (single npm
+  package / npm monorepo / PyPI package).
 - `scripts/lint-publish-workflow.mjs` -- the linter behind `workflow-lint.yml`.
 - `scripts/convert-publish.mjs` -- codemod that rewrites a consumer's publish
   workflow to the canonical shape.
@@ -369,6 +373,48 @@ there is a failing check, not a gate on them.
 `workflow-lint` warns (without failing) when a publish job has no verification
 step; see the `verify-published` rule below.
 
+## PyPI
+
+PyPI packages follow the same "main is the release branch" model (decision on
+[#10](https://github.com/johnhenry/workflows/issues/10)): a push to `main`
+publishes only if the version in `pyproject.toml` is not on PyPI yet; otherwise
+the run is a green no-op. Copy `templates/publish-pypi.yml` to
+`.github/workflows/publish-pypi.yml`, set `package-name` (and
+`working-directory` for a subdirectory package), and bump
+`[project].version` in the PR that should release.
+
+`pypi-publish.yml@v1` does, in order:
+
+1. read name + version from `pyproject.toml` (static `[project].version`
+   required; Python 3.11+ for `tomllib`);
+2. `GET https://pypi.org/pypi/<name>/<version>/json` -- 200 means already
+   published, so the rest is skipped (the gate does not run either);
+3. run `gate-commands` (optional, newline-separated, in `working-directory`),
+   then `build-command` (default `python -m build`, output in `dist/`);
+4. publish with `pypa/gh-action-pypi-publish` using **trusted publishing**
+   (no token or secret);
+5. verify the version appears on PyPI (polls every `verify-interval` seconds up
+   to `verify-timeout` minutes), failing the run if it never does;
+6. create the tag `<package-name>-v<version>` and a GitHub Release through the
+   `create-release` composite action (`tag-prefix`). `create-release: false`
+   skips this.
+
+Inputs: `working-directory` (`.`), `python-version` (`3.12`), `package-name`
+(default: `[project].name`), `build-command`, `gate-commands` (default none),
+`create-release` (`true`), `verify-timeout` (`10`), `verify-interval` (`20`).
+Outputs: `published`, `version`.
+
+The caller's job must grant `permissions: { contents: write, id-token: write }`
+and the caller must use `concurrency: { group: publish-pypi-${{ github.ref }},
+cancel-in-progress: false }` (the reusable workflow declares neither).
+
+**The filename is part of the trust.** On pypi.org add a trusted publisher
+(owner, repository, the caller's workflow filename, optional environment).
+PyPI validates the *calling* workflow's filename, not `pypi-publish.yml`, so
+renaming the caller breaks publishing until the publisher is re-registered. A
+repo converting from a tag-triggered PyPI workflow should keep its existing
+filename.
+
 ## `workflow-lint.yml` -- keep a repo on the model
 
 Add one job to the repo's `ci.yml` (no inputs required):
@@ -394,9 +440,9 @@ workflow that calls `npm-publish.yml`, runs `npm publish`, or uses
 | `push-main-only` | `push.branches` is not exactly `[main]` (or there is no `push`) |
 | `workflow-dispatch` | there is no `workflow_dispatch` trigger |
 | `concurrency-no-cancel` | no `concurrency` (workflow- or job-level), or `cancel-in-progress` is not `false` |
-| `permissions-id-token` | the publish job lacks `id-token: write` |
+| `permissions-id-token` | the publish job (npm or PyPI) lacks `id-token: write` |
 | `permissions-pull-requests` | a job using `changesets/action` lacks `pull-requests: write` (the permission alone is not enough: the repo setting "Allow GitHub Actions to create and approve pull requests" must also be on, which a workflow file cannot check) |
-| `permissions-contents-write` | a job calling `npm-publish.yml` lacks `contents: write` |
+| `permissions-contents-write` | a job calling `npm-publish.yml` or `pypi-publish.yml` lacks `contents: write` |
 | `node-matches-engines` | a pinned `node-version` major differs from `engines.node` (root; for monorepos with no root `engines`, the highest workspace floor) |
 | `secrets-inherit` | a job calling `npm-publish.yml` lacks `secrets: inherit` |
 | `concurrency-group-unique` | two publish workflows in the repo use the same `concurrency.group` (the finding names both files) |
@@ -410,10 +456,20 @@ Warnings (printed as `WARN [rule]` / `::warning`, they never fail the run):
 Workflows are selected by **content**, not filename: only files whose jobs call
 `npm-publish.yml`, run `npm publish` / `changeset publish` / `npm run release`
 (or the yarn/pnpm equivalents), or use `changesets/action` are checked. The
-`publish-workflows` glob is just the search space; a file it matches that does
-not publish to npm (a Rust-binary or PyPI release workflow such as wsh's
-`release-rust.yml` or math-plus's `release-interop-python.yml`) is skipped with
-`workflow-lint: INFO skipped <file>: does not publish to npm` and never flagged.
+`publish-workflows` glob is just the search space; a file it matches that
+publishes nothing to npm or PyPI (a Rust-binary release workflow such as wsh's
+`release-rust.yml`) is skipped with
+`workflow-lint: INFO skipped <file>: does not publish to npm or PyPI` and never
+flagged.
+
+Since v1.4.0, workflows that use `pypa/gh-action-pypi-publish` or call
+`pypi-publish.yml` are **PyPI publish workflows** and are held to the same
+trigger / concurrency / permissions rules (push to `main` only, no tags or
+`release:`, `workflow_dispatch`, `cancel-in-progress: false`, `id-token:
+write`, and `contents: write` when calling `pypi-publish.yml`). The npm-only
+rules (`node-matches-engines`, `secrets-inherit`, the `verify-published`
+warning) do not apply to them. `convert-publish.mjs` stays npm-only and leaves
+PyPI workflows untouched.
 
 Run it locally with `node scripts/lint-publish-workflow.mjs <repo-path>`.
 It also prints `workflow-lint: INFO publish workflow filenames (trust-bound ...)`

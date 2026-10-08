@@ -244,13 +244,13 @@ test("non-npm release workflows (rust binaries, PyPI) are untouched, unflagged a
   assert.match(fs.readFileSync(path.join(d, ".github/workflows/publish.yml"), "utf8"), /group: publish-\$\{\{ github\.ref \}\}/);
 });
 
-test("lintRepo skips non-npm release workflows with an INFO and no findings", () => {
+test("lintRepo skips non-publish release workflows (rust) with an INFO and no findings; PyPI ones are linted", () => {
   const files = { ".github/workflows/publish.yml": read("expected", "fileable.publish.yml") };
-  for (const [fx, name] of Object.entries(NON_NPM)) files[`.github/workflows/${name}`] = read("non-npm", fx);
+  files[".github/workflows/release-rust.yml"] = read("non-npm", "wsh.release-rust.yml");
   const d = tmpRepo(files);
   const r = lintRepo(d);
   assert.deepEqual(r.files, [".github/workflows/publish.yml"]);
-  assert.equal(r.skipped.length, 2);
+  assert.equal(r.skipped.length, 1);
   assert.deepEqual(r.results.flatMap((x) => x.findings), []);
 });
 

@@ -57,7 +57,7 @@ export function warnWorkflow({ text }) {
   if (wf.errors.length || !wf.root) return [];
   const out = [];
   for (const job of jobsOf(wf).filter((j) => j.isPublish)) {
-    if (job.reusable) continue; // npm-publish.yml verifies by itself
+    if (job.reusable || !job.npmPublish) continue; // npm-publish.yml verifies by itself; PyPI jobs are not npm
     const verified = job.steps.some(
       (s) => (typeof s.uses === "string" && VERIFY_USES_RE.test(s.uses)) || (typeof s.run === "string" && VERIFY_RUN_RE.test(s.run)),
     );
@@ -154,6 +154,9 @@ export function lintWorkflow({ text, engineMajor = null }) {
     if (job.usesChangesets && perms.level("pull-requests") !== "write") {
       add(permLine(), "permissions-pull-requests", `job \`${job.id}\` uses changesets/action and needs \`permissions: pull-requests: write\` to open the "Version Packages" PR (and the repo setting Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests" must be enabled: \`gh api -X PUT repos/<owner>/<repo>/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true\`)`);
     }
+    if (job.pypiReusable && perms.level("contents") !== "write") {
+      add(permLine(), "permissions-contents-write", `job \`${job.id}\` calls pypi-publish.yml and needs \`permissions: contents: write\` so it can create the <package>-v<version> tag and GitHub Release`);
+    }
     if (job.reusable) {
       if (perms.level("contents") !== "write") {
         add(permLine(), "permissions-contents-write", `job \`${job.id}\` calls npm-publish.yml and needs \`permissions: contents: write\` so it can create the v<version> tag and GitHub Release`);
@@ -165,7 +168,7 @@ export function lintWorkflow({ text, engineMajor = null }) {
     }
 
     // node-version vs engines
-    if (engineMajor != null) {
+    if (engineMajor != null && job.npmPublish) {
       const nodeVersions = [];
       if (job.reusable) {
         const withMap = valueOf(job.map, "with");
@@ -196,12 +199,14 @@ export function lintWorkflow({ text, engineMajor = null }) {
 /**
  * Select publish workflows by CONTENT: a workflow qualifies only if a job calls
  * npm-publish.yml, runs `npm publish` / `changeset publish` / a known publish
- * script, or uses changesets/action. The glob is only the search space (plus,
+ * script, or uses changesets/action -- or (unless `npmOnly`, which the codemod
+ * passes) publishes to PyPI via `pypa/gh-action-pypi-publish` or a call to
+ * pypi-publish.yml. The glob is only the search space (plus,
  * when `sniff`, every other workflow that qualifies). Glob matches that parse
  * but do not publish to npm are returned in `skipped`, never touched.
  * Unparseable glob matches stay in `files` so the parse error is reported.
  */
-export function classifyWorkflows(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = true } = {}) {
+export function classifyWorkflows(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = true, npmOnly = false } = {}) {
   const matched = new Set(matchWorkflowFiles(repoPath, glob));
   const candidates = new Set(matched);
   const dir = path.join(repoPath, ".github", "workflows");
@@ -216,7 +221,7 @@ export function classifyWorkflows(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff
     try {
       const wf = parseWorkflow(fs.readFileSync(path.join(repoPath, rel), "utf8"));
       if (wf.errors.length || !wf.root) parsed = false;
-      else publishes = jobsOf(wf).some((j) => j.isPublish);
+      else publishes = jobsOf(wf).some((j) => (npmOnly ? j.npmPublish : j.isPublish));
     } catch {
       parsed = false;
     }
@@ -231,7 +236,7 @@ export function discoverPublishWorkflows(repoPath, glob = DEFAULT_PUBLISH_GLOB, 
   return classifyWorkflows(repoPath, glob, opts).files;
 }
 
-export const skipMessage = (file) => `skipped ${file}: does not publish to npm`;
+export const skipMessage = (file) => `skipped ${file}: does not publish to npm or PyPI`;
 
 export function lintRepo(repoPath, glob = DEFAULT_PUBLISH_GLOB, { sniff = glob === DEFAULT_PUBLISH_GLOB } = {}) {
   const info = engineInfo(repoPath);

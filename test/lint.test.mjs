@@ -14,7 +14,7 @@ const lint = (n, engineMajor = 26) => lintWorkflow({ text: fx(n), engineMajor })
 const lineOf = (text, needle) => text.split("\n").findIndex((l) => l.includes(needle)) + 1;
 
 test("good fixtures produce no findings", () => {
-  for (const n of ["good-reusable", "good-inline", "good-changesets"]) assert.deepEqual(lint(n), [], n);
+  for (const n of ["good-reusable", "good-inline", "good-changesets", "good-pypi-reusable", "good-pypi-inline"]) assert.deepEqual(lint(n), [], n);
 });
 
 // [fixture, expected rule, text on the line the finding must point at]
@@ -32,6 +32,12 @@ const BAD = [
   ["bad-inline-node", "node-matches-engines", "node-version: 24"],
   ["bad-no-secrets-inherit", "secrets-inherit", "publish:"],
   ["bad-changesets-no-pr-write", "permissions-pull-requests", "permissions:"],
+  ["bad-pypi-push-branches", "push-main-only", "branches: [main, next]"],
+  ["bad-pypi-tag-trigger", "no-tag-trigger", 'tags: ["v*"]'],
+  ["bad-pypi-no-contents-write", "permissions-contents-write", "permissions:"],
+  ["bad-pypi-no-id-token", "permissions-id-token", "permissions:"],
+  ["bad-pypi-no-concurrency", "concurrency-no-cancel", "on:"],
+  ["bad-pypi-cancel-true", "concurrency-no-cancel", "cancel-in-progress: true"],
 ];
 for (const [name, rule, needle] of BAD) {
   test(`${name} -> ${rule} (line-numbered)`, () => {
@@ -124,7 +130,7 @@ test("glob: braces and * stay inside one path segment", () => {
 });
 
 test("templates lint clean", () => {
-  for (const t of ["publish", "publish-changesets"]) {
+  for (const t of ["publish", "publish-changesets", "publish-pypi"]) {
     const text = fs.readFileSync(path.join(here, "..", "templates", `${t}.yml`), "utf8");
     assert.deepEqual(lintWorkflow({ text, engineMajor: 26 }), [], t);
     assert.deepEqual(warnWorkflow({ text }), [], `${t} must also be warning-free (verification wired)`);
@@ -202,4 +208,35 @@ test("verify-published: lintRepo reports warnings separately; CLI prints WARN bu
   assert.match(r.stdout, /::warning file=\.github\/workflows\/publish\.yml,line=\d+,title=verify-published::/);
   assert.doesNotMatch(r.stdout, /::error/);
   assert.match(r.stdout, /1 warning/);
+});
+
+// --- PyPI publish workflows --------------------------------------------------
+test("PyPI: node-version/engines and npm verify-published rules never apply to PyPI jobs", () => {
+  assert.deepEqual(lintWorkflow({ text: fx("good-pypi-inline"), engineMajor: 22 }), []);
+  assert.deepEqual(lintWorkflow({ text: fx("good-pypi-reusable"), engineMajor: 22 }), []);
+  assert.deepEqual(warn(fx("good-pypi-inline")), []);
+  assert.deepEqual(warn(fx("good-pypi-reusable")), []);
+});
+
+test("PyPI: reusable pypi-publish.yml callers do not need secrets: inherit", () => {
+  assert.ok(!fx("good-pypi-reusable").includes("secrets:"));
+  assert.deepEqual(lint("good-pypi-reusable"), []);
+});
+
+test("PyPI: lintRepo classifies pypa action / pypi-publish.yml workflows as publish workflows, not skipped", () => {
+  const d = tmpRepo({
+    ".github/workflows/publish-pypi.yml": fx("bad-pypi-tag-trigger"),
+    ".github/workflows/release-py.yml": fx("good-pypi-inline"),
+    ".github/workflows/release-rust.yml": "on:\n  push:\n    tags: ['v*']\njobs:\n  b:\n    runs-on: x\n    steps:\n      - run: cargo publish\n",
+  });
+  const r = lintRepo(d);
+  assert.deepEqual(r.files, [".github/workflows/publish-pypi.yml", ".github/workflows/release-py.yml"]);
+  assert.deepEqual(r.skipped, [".github/workflows/release-rust.yml"]);
+  assert.ok(r.results.find((x) => x.file.endsWith("publish-pypi.yml")).findings.some((f) => f.rule === "no-tag-trigger"));
+});
+
+test("PyPI: the pre-v1.4 math-plus tag-triggered workflow is now flagged", () => {
+  const text = fs.readFileSync(path.join(here, "fixtures", "non-npm", "math-plus.release-interop-python.yml"), "utf8");
+  const rules = lintWorkflow({ text, engineMajor: 26 }).map((f) => f.rule).sort();
+  assert.deepEqual(rules, ["concurrency-no-cancel", "no-tag-trigger", "push-main-only"]);
 });
