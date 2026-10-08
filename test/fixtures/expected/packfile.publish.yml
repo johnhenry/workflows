@@ -1,4 +1,4 @@
-name: Release
+name: Publish to npm
 
 # Publish model: main is the release branch. A push to main publishes only if
 # package.json's version isn't on npm yet (otherwise a clean no-op), then tags
@@ -9,7 +9,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: npm-publish
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -18,35 +18,19 @@ jobs:
     permissions:
       contents: write # tag + GitHub Release by-product
       id-token: write # npm provenance
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
-          cache: npm
-          registry-url: https://registry.npmjs.org
-      - run: npm ci
-      - name: Gate (typecheck + tests + build)
-        run: |
-          npm run typecheck
-          npm test
-          npm run build
-      - name: Verify tag matches package version
-        if: github.ref_type == 'tag'
-        run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "tag v$TAG_VERSION does not match package version $PKG_VERSION" >&2
-            exit 1
-          fi
+          node-version: '26'
+          registry-url: 'https://registry.npmjs.org'
 
-      - name: No NPM_TOKEN — skipping publish
-        if: env.NPM_TOKEN == ''
-        run: |
-          echo "::notice title=Publish skipped::NPM_TOKEN is not configured; nothing was published."
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run typecheck
 
       - name: Check whether this version is new on npm
         id: release-probe
@@ -62,12 +46,10 @@ jobs:
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish to npm
+      - name: Publish
+        # Idempotent: `npm view` exits non-zero for a version that isn't on
+        # the registry yet, which is the signal to publish.
         id: publish
-        if: env.NPM_TOKEN != ''
-        # Prerelease versions go to the "rc" dist-tag; stable to "latest".
-        # Idempotent: `npm view` exits non-zero for a version that isn't on the
-        # registry yet, which is the signal to publish.
         run: |
           PKG_NAME=$(node -p "require('./package.json').name")
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -75,12 +57,7 @@ jobs:
             echo "::notice title=Already published::$PKG_NAME@$PKG_VERSION is already on npm; nothing to do."
             exit 0
           fi
-          case "$PKG_VERSION" in
-            *-*) DIST_TAG=rc ;;
-            *)   DIST_TAG=latest ;;
-          esac
-          echo "publishing $PKG_NAME@$PKG_VERSION with dist-tag $DIST_TAG"
-          npm publish --provenance --access public --tag "$DIST_TAG"
+          npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

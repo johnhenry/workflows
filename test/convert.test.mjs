@@ -19,7 +19,12 @@ const CONSUMERS = [
   ["isomorphic-jj.publish.yml", "v*.*.* tags, no dispatch, reusable"],
   ["isomorphic-jj.publish-unscoped.yml", "v*.*.* tags, inline job, workflow-level permissions"],
   ["a2a-query.release.yml", "inline job, npm-publish concurrency group, dist-tag logic"],
-  ["raijin.publish.yml", "release-only inline monorepo publish"],
+  ["raijin.publish.yml", "release-only inline monorepo publish (npm publish -w: no composite)"],
+  ["apple-foundation-models.publish.yml", "inline, macos runner, id-less publish step"],
+  ["domable.publish.yml", "inline, id-less publish step"],
+  ["math-grapher.publish.yml", "inline, workflow-level permissions, NPM_TOKEN-guarded publish"],
+  ["packfile.publish.yml", "inline, id-less publish step"],
+  ["a2a-query.release-main.yml", "inline with a hand-written release step: no second one added"],
 ];
 
 // isomorphic-jj has two publish workflows in one repo: convert them as such.
@@ -52,7 +57,11 @@ test("inline publish jobs: step bodies are never rewritten", () => {
     const before = read("consumers", name);
     const after = convertWorkflowText(before, { engineMajor: 26 }).text;
     // everything below `jobs:` is identical except permissions lines and the node-version scalar
-    const norm = (t) => t.slice(t.indexOf("\njobs:")).replace(/node-version: 24/, "node-version: 26");
+    // ... and the by-product steps the codemod inserts (probe, `id: publish`, create-release)
+    const norm = (t) => t.slice(t.indexOf("\njobs:")).replace(/node-version: 24/, "node-version: 26")
+      .replace(/ {6}- name: Check whether this version is new on npm\n(?: {8}.*\n| *\n)+?(?= {6}- |\n* *$)/, "")
+      .replace(/\n\n {6}- name: Tag and GitHub Release \(by-product\)\n(?: {8}.*\n?)+/, "\n")
+      .replace(/\n {8}id: publish(?=\n)/, "");
     assert.equal(norm(after).replace(/\n {4}permissions:\n(?: {6}.*\n)+/, "\n"), norm(before).replace(/\n {4}permissions:\n(?: {6}.*\n)+/, "\n"), name);
     assert.deepEqual(stepsOf(after).length, stepsOf(before).length);
   }
@@ -60,7 +69,8 @@ test("inline publish jobs: step bodies are never rewritten", () => {
   assert.match(a2a.text, /DIST_TAG=rc/);
   assert.match(a2a.text, /group: npm-publish/, "existing concurrency group is preserved");
   assert.ok(a2a.warnings.some((w) => /tag ref/.test(w)), "tag-dependent steps are flagged for manual review");
-  assert.doesNotMatch(a2a.text, /contents: write/, "inline jobs don't get contents: write");
+  assert.match(a2a.text, /contents: write # tag \+ GitHub Release by-product/, "inline jobs that get the release step get contents: write");
+  assert.match(a2a.text, /uses: johnhenry\/workflows\/\.github\/actions\/create-release@v1/);
 });
 
 test("wsh: install-command / node-cache / gate-commands preserved, node 24 -> 26", () => {
@@ -242,4 +252,40 @@ test("lintRepo skips non-npm release workflows with an INFO and no findings", ()
   assert.deepEqual(r.files, [".github/workflows/publish.yml"]);
   assert.equal(r.skipped.length, 2);
   assert.deepEqual(r.results.flatMap((x) => x.findings), []);
+});
+
+const count = (t, re) => (t.match(re) ?? []).length;
+const COMPOSITE = /uses: johnhenry\/workflows\/\.github\/actions\/create-release@v1/g;
+
+test("release by-product: inline npm publish jobs get probe + composite, guarded by the publish step's outcome", () => {
+  for (const name of ["apple-foundation-models", "domable", "math-grapher", "packfile"]) {
+    const out = convertWorkflowText(read("consumers", `${name}.publish.yml`), { engineMajor: 26 }).text;
+    assert.equal(count(out, COMPOSITE), 1, name);
+    assert.match(out, /if: steps\.release-probe\.outputs\.new == 'true' && steps\.publish\.outcome == 'success'/, name);
+    assert.match(out, /contents: write/, name);
+    assert.ok(out.indexOf("id: release-probe") < out.indexOf("id: publish") && out.indexOf("id: publish") < out.indexOf("create-release@v1"), "order: probe, publish, release");
+  }
+});
+
+test("release by-product: a hand-written release step is detected; no second one is added", () => {
+  const src = read("consumers", "a2a-query.release-main.yml");
+  assert.match(src, /gh release create/);
+  const out = convertWorkflowText(src, { engineMajor: 26 }).text;
+  assert.equal(out, src);
+  assert.equal(count(out, COMPOSITE), 0);
+  // same for a job that already uses the composite
+  const withComposite = convertWorkflowText(read("consumers", "domable.publish.yml"), { engineMajor: 26 }).text;
+  assert.equal(count(convertWorkflowText(withComposite, { engineMajor: 26 }).text, COMPOSITE), 1);
+});
+
+test("release by-product: monorepo (npm publish -w) and reusable callers get no composite step", () => {
+  assert.equal(count(convertWorkflowText(read("consumers", "raijin.publish.yml"), { engineMajor: 26 }).text, COMPOSITE), 0);
+  assert.equal(count(convertWorkflowText(read("consumers", "fileable.publish.yml"), { engineMajor: 26 }).text, COMPOSITE), 0);
+});
+
+test("release by-product: an existing publish step id is reused", () => {
+  const src = read("consumers", "domable.publish.yml").replace("      - name: Publish\n", "      - name: Publish\n        id: pub\n");
+  const out = convertWorkflowText(src, { engineMajor: 26 }).text;
+  assert.match(out, /steps\.pub\.outcome == 'success'/);
+  assert.doesNotMatch(out, /id: publish/);
 });

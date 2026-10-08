@@ -13,8 +13,16 @@
 //                         id-token: write; inline publish jobs get id-token: write
 //   - `node-version`   -> set to the repo's engines.node major
 //   - comments about the release/tag double-fire race are removed
-// It never rewrites the body of an inline publish job (steps, dist-tag logic,
-// ...); it only prints warnings where a body still assumes a tag ref.
+//   - inline jobs that run `npm publish` get the tag + GitHub Release
+//     by-product: a version probe before the publish step and the
+//     `create-release` composite action after it (guarded by the publish
+//     step's outcome), plus `contents: write`. A job that already creates its
+//     own release (create-release, `gh release create`, ...) is left alone;
+//     monorepo (`npm publish -w`) and changesets jobs are skipped (they tag
+//     in-script / via changesets).
+// It never rewrites the body of an existing inline publish step (dist-tag
+// logic, ...); it only inserts steps and prints warnings where a body still
+// assumes a tag ref.
 // Idempotent: a second run changes nothing.
 import fs from "node:fs";
 import path from "node:path";
@@ -42,11 +50,27 @@ const MARKER_LINES = [
 ];
 const RACE_RE = /release|\btags?\b|tag-|\brace\b|twice|double[- ]?fire|redundant|trigger/i;
 const TAG_REF_RE = /GITHUB_REF#refs\/tags|github\.ref_type\s*==\s*['"]tag['"]|refs\/tags\/|github\.ref_name|GITHUB_REF_NAME/;
+const RELEASE_USES = "johnhenry/workflows/.github/actions/create-release@v1";
+const NPM_PUBLISH_RE = /\bnpm\s+publish\b/;
+const MONOREPO_PUBLISH_RE = /\bnpm\s+publish\b[^\n]*(?:\s-w\b|\s--workspaces?\b)/;
+const HAS_RELEASE_RE = /\bgh\s+release\s+create\b/;
 const LINT_USES = "johnhenry/workflows/.github/workflows/workflow-lint.yml@v1";
 const CANON = {
   contents: ["write", "tag + GitHub Release by-product of npm-publish.yml"],
   "id-token": ["write", "npm provenance"],
 };
+
+/** What the codemod should do about the tag + Release by-product for an inline job. */
+function releasePlan(job) {
+  if (job.reusable) return { kind: "none" };
+  const runs = job.steps.filter((s) => typeof s.run === "string");
+  if (job.steps.some((s) => typeof s.uses === "string" && /^changesets\/action(@|$)/.test(s.uses))) return { kind: "none" };
+  if (runs.some((s) => MONOREPO_PUBLISH_RE.test(s.run))) return { kind: "none" };
+  const publishSteps = runs.filter((s) => NPM_PUBLISH_RE.test(s.run));
+  if (!publishSteps.length) return { kind: "none" };
+  if (job.steps.some((s) => (typeof s.uses === "string" && /create-release@|softprops\/action-gh-release|ncipollo\/release-action/.test(s.uses)) || (typeof s.run === "string" && HAS_RELEASE_RE.test(s.run)))) return { kind: "has" };
+  return { kind: "add", step: publishSteps[publishSteps.length - 1] };
+}
 
 const dedent = (lines) => {
   const n = indentOf(lines[0]);
@@ -133,7 +157,9 @@ export function convertWorkflowText(text, { engineMajor = null, fileBase = null,
   // ---- permissions + node per publish job -------------------------------------
   const topPerm = pairOf(wf.root, "permissions");
   for (const job of publishJobs) {
-    const required = job.reusable ? ["contents", "id-token"] : ["id-token"];
+    const plan = releasePlan(job);
+    const required = job.reusable || plan.kind !== "none" ? ["contents", "id-token"] : ["id-token"];
+    const contentsNote = job.reusable ? CANON.contents[1] : "tag + GitHub Release by-product";
     const jobPerm = pairOf(job.map, "permissions");
     const jobIndent = indentOf(wf.lines[job.line - 1]);
     const childIndent = jobIndent + 2;
@@ -151,9 +177,8 @@ export function convertWorkflowText(text, { engineMajor = null, fileBase = null,
           keep.push(...dedent(wf.lines.slice(s.start - 1, s.end)));
         }
       }
-      const req = (job.reusable ? ["contents", "id-token"] : ["id-token"]).map((k) => `${k}: ${CANON[k][0]} # ${CANON[k][1]}`);
-      const inlineKeep = !job.reusable && isMap(baseNode);
-      lines.push(...indent([...(inlineKeep ? [] : []), ...req, ...keep], 2));
+      const req = required.map((k) => `${k}: ${CANON[k][0]} # ${k === "contents" ? contentsNote : CANON[k][1]}`);
+      lines.push(...indent([...req, ...keep], 2));
       return indent(lines, blockIndent);
     };
 
@@ -172,8 +197,50 @@ export function convertWorkflowText(text, { engineMajor = null, fileBase = null,
       const s = pairSpan(wf, topPerm);
       edits.push({ start: s.start, end: s.end, lines: makeBlock(topPerm.value, 0) });
     } else {
-      const lines = ["permissions:", "  contents: read", `  id-token: write # ${CANON["id-token"][1]}`];
+      const lines = ["permissions:", required.includes("contents") ? `  contents: write # ${contentsNote}` : "  contents: read", `  id-token: write # ${CANON["id-token"][1]}`];
       edits.push({ start: job.line + 1, end: job.line, lines: indent(lines, childIndent) });
+    }
+
+    // tag + GitHub Release by-product (inline jobs)
+    if (plan.kind === "add") {
+      const sm = plan.step.map;
+      const first = sm.items[0];
+      const stepFirst = wf.lineOf(first.key.range[0]);
+      const dashIndent = indentOf(wf.lines[stepFirst - 1]);
+      const stepEnd = wf.endLineOf(sm);
+      const ids = new Set(job.steps.map((s) => scalarOf(valueOf(s.map, "id"))).filter(Boolean));
+      let pubId = scalarOf(valueOf(sm, "id"));
+      if (!pubId) {
+        pubId = ["publish", "npm-publish", "publish-step"].find((c) => !ids.has(c)) ?? "publish-npm";
+        edits.push({ start: pairSpan(wf, first).end + 1, end: pairSpan(wf, first).end, lines: [`${" ".repeat(dashIndent + 2)}id: ${pubId}`] });
+      }
+      const run = commentRunAbove(wf, stepFirst);
+      const probe = [
+        "- name: Check whether this version is new on npm",
+        "  id: release-probe",
+        "  # Feeds the tag + GitHub Release step below: only a run that actually",
+        "  # publishes a new version should create the release.",
+        "  run: |",
+        "    PKG_NAME=$(node -p \"require('./package.json').name\")",
+        "    PKG_VERSION=$(node -p \"require('./package.json').version\")",
+        "    echo \"version=$PKG_VERSION\" >> \"$GITHUB_OUTPUT\"",
+        "    if npm view \"$PKG_NAME@$PKG_VERSION\" version >/dev/null 2>&1; then",
+        "      echo \"new=false\" >> \"$GITHUB_OUTPUT\"",
+        "    else",
+        "      echo \"new=true\" >> \"$GITHUB_OUTPUT\"",
+        "    fi",
+        "",
+      ];
+      edits.push({ start: run ? run.start : stepFirst, end: (run ? run.start : stepFirst) - 1, lines: indent(probe, dashIndent) });
+      const rel = [
+        "",
+        "- name: Tag and GitHub Release (by-product)",
+        `  if: steps.release-probe.outputs.new == 'true' && steps.${pubId}.outcome == 'success'`,
+        `  uses: ${RELEASE_USES}`,
+        "  with:",
+        "    version: ${{ steps.release-probe.outputs.version }}",
+      ];
+      edits.push({ start: stepEnd + 1, end: stepEnd, lines: indent(rel, dashIndent) });
     }
 
     // node-version
