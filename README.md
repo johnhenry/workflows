@@ -66,7 +66,12 @@ One model for every repo that publishes `@johnhenry/*` packages:
    are equivalent to the publish workflow.
 3. **Publishing is idempotent.** If `name@version` is already on the registry
    the run is a clean no-op (green, `published=false`). Most pushes to main
-   don't change the version, so most runs are no-ops.
+   don't change the version, so most runs are no-ops. A `npm publish` that
+   409s (`E409` / "previously staged version" / `EPUBLISHCONFLICT` / "cannot
+   publish over the previously published") because a duplicate run staged the
+   same version first is also treated as already published: green,
+   `published=false`, and the verify + tag/release steps still run. Custom or
+   staggered publish scripts should match all of those strings.
 4. **The tag and the GitHub Release are by-products, never triggers.** After a
    successful publish the workflow creates `v<version>` and a Release for it.
    Nobody creates tags or releases by hand to cause a publish.

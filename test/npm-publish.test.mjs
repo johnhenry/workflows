@@ -121,3 +121,35 @@ test("publish: a non-E404 publish failure fails without first-publish guidance",
   assert.notEqual(r.status, 0);
   assert.doesNotMatch(r.stdout + r.stderr, /First publish of a new package name/);
 });
+
+for (const [label, msg] of [
+  ["E409 previously staged version", "npm error code E409\nnpm error 409 Conflict - PUT https://registry.npmjs.org/pkg - previously staged version 1.2.3"],
+  ["EPUBLISHCONFLICT", "npm error code EPUBLISHCONFLICT"],
+  ["cannot publish over the previously published", "npm error You cannot publish over the previously published versions: 1.2.3."],
+]) {
+  test(`publish: ${label} on a not-yet-visible version is treated as already published (green, published=false, conflict=true)`, () => {
+    const s = sandbox({ npmBody: `if [ "$1" = view ]; then exit 1; fi; if [ "$1" = publish ]; then printf '%s\\n' "${msg.replace(/\n/g, '" "')}" >&2; exit 1; fi; exit 0` });
+    const r = s.run(PUBLISH);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.outputs.published, "false");
+    assert.equal(r.outputs.conflict, "true");
+    assert.equal(r.outputs.version, "1.2.3");
+    assert.match(r.stdout, /::notice title=Already published/);
+    assert.doesNotMatch(r.stdout + r.stderr, /First publish of a new package name/);
+  });
+}
+
+test("publish: a normal success and a registry-visible skip do not set conflict", () => {
+  assert.equal(sandbox().run(PUBLISH, { FAKE_NPM_HAS_VERSION: "0" }).outputs.conflict, undefined);
+  assert.equal(sandbox().run(PUBLISH, { FAKE_NPM_HAS_VERSION: "1" }).outputs.conflict, undefined);
+});
+
+test("conflict (E409) still runs verify-published and the tag/release step (which skips itself if the tag exists)", () => {
+  const ver = steps.find((s) => s.uses === "johnhenry/workflows/.github/actions/verify-published@v1");
+  const rel = steps.find((s) => s.name?.startsWith("Tag and GitHub Release"));
+  for (const s of [ver, rel]) {
+    assert.match(s.if, /outputs\.published == 'true'/);
+    assert.match(s.if, /outputs\.conflict == 'true'/);
+  }
+  assert.match(rel.if, /inputs\.create-release/);
+});

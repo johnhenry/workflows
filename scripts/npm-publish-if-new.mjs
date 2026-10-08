@@ -59,6 +59,15 @@ console.log(`🚀 publishing ${spec} ...`);
 const publish = spawnSync(
   "npm",
   ["publish", "--provenance", "--access", "public"],
-  { cwd: ROOT, stdio: "inherit" },
+  { cwd: ROOT, encoding: "utf8" },
 );
+process.stdout.write(publish.stdout ?? "");
+process.stderr.write(publish.stderr ?? "");
+// npm stages a publish before `npm view` can see it, so a duplicate run can
+// pass the guard above and then 409. That is "already published", not a failure.
+const CONFLICT = /E409|previously staged|EPUBLISHCONFLICT|cannot publish over the previously published/i;
+if (publish.status !== 0 && CONFLICT.test(`${publish.stdout}${publish.stderr}`)) {
+  console.log(`⏭️  skip ${spec}: already published/staged (npm 409 conflict)`);
+  process.exit(0);
+}
 process.exit(publish.status ?? 1);
