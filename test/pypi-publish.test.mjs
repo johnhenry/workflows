@@ -36,7 +36,9 @@ test("step order: check -> gate -> build -> publish -> verify -> tag/release, al
   assert.deepEqual([...order].sort((a, b) => a - b), order, names.join(" | "));
   for (const p of ["Gate", "Build", "Publish to PyPI", "Verify the version", "Tag and GitHub Release"]) assert.match(step(p).if, /exists == 'false'/, p);
   const pub = step("Publish to PyPI");
-  assert.match(pub.uses, /^pypa\/gh-action-pypi-publish@/);
+  assert.equal(pub.uses, undefined, "pypa docker action cannot run nested in a composite action");
+  assert.match(pub.run, /_\/oidc\/mint-token/);
+  assert.match(pub.run, /twine upload/);
   const rel = step("Tag and GitHub Release");
   assert.equal(rel.uses, "johnhenry/workflows/.github/actions/create-release@v1");
   assert.match(rel.with["tag-prefix"], /-v$/);
