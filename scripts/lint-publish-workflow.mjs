@@ -33,6 +33,7 @@ export const RULES = {
   "concurrency-no-cancel": "must set `concurrency` with `cancel-in-progress: false`",
   "permissions-id-token": "publish job needs `permissions: id-token: write`",
   "permissions-contents-write": "job calling npm-publish.yml needs `permissions: contents: write`",
+  "permissions-pull-requests": "job using changesets/action needs `permissions: pull-requests: write` (it opens the Version Packages PR); the repo setting \"Allow GitHub Actions to create and approve pull requests\" must also be on",
   "node-matches-engines": "`node-version` major must equal the repo's `engines.node` major",
   "secrets-inherit": "job calling npm-publish.yml needs `secrets: inherit`",
   "concurrency-group-unique": "when a repo has several publish workflows, each `concurrency.group` must be distinct (a shared group makes GitHub cancel queued runs)",
@@ -115,6 +116,9 @@ export function lintWorkflow({ text, engineMajor = null }) {
     };
     if (perms.level("id-token") !== "write") {
       add(permLine(), "permissions-id-token", `job \`${job.id}\` needs \`permissions: id-token: write\` (npm provenance / trusted publishing)`);
+    }
+    if (job.usesChangesets && perms.level("pull-requests") !== "write") {
+      add(permLine(), "permissions-pull-requests", `job \`${job.id}\` uses changesets/action and needs \`permissions: pull-requests: write\` to open the "Version Packages" PR (and the repo setting Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests" must be enabled: \`gh api -X PUT repos/<owner>/<repo>/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true\`)`);
     }
     if (job.reusable) {
       if (perms.level("contents") !== "write") {

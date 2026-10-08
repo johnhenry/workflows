@@ -115,6 +115,7 @@ export function jobsOf(wf) {
       uses,
       reusable,
       steps: stepFacts,
+      usesChangesets: stepFacts.some((s) => typeof s.uses === "string" && /^changesets\/action(@|$)/.test(s.uses)),
       isPublish: reusable || inlinePublish,
     };
   });

@@ -1,0 +1,59 @@
+# .github/workflows/publish.yml -- monorepo publish with Changesets.
+#
+# Flow: PRs that change a package include a changeset (`npx changeset`). On every
+# push to main this workflow either (a) opens/updates the "Version Packages" PR
+# that applies the bumps, or (b) if that PR was just merged, publishes every
+# package whose version is not on npm yet and -- as a by-product -- pushes a git
+# tag and creates a GitHub Release per published package (changesets/action's
+# default `createGithubReleases: true`; needs `contents: write`).
+#
+# package.json needs:  "release": "npm run build && changeset publish"
+# (`changeset publish` skips versions already on the registry, so re-runs are safe).
+name: Publish to npm
+
+# Publish model: main is the release branch. See johnhenry/workflows' README.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write # version-bump commit, tags, GitHub Releases
+  id-token: write # npm provenance / trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # changesets diffs against the base branch
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26" # must equal the root engines.node major
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci
+
+      - name: Verify before publishing
+        run: |
+          npm run build --if-present
+          npm test
+
+      - name: Version PR or publish
+        uses: changesets/action@v1
+        with:
+          publish: npm run release
+          title: "chore: version packages"
+          commit: "chore: version packages"
+          # createGithubReleases defaults to true: a tag + Release per package.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
