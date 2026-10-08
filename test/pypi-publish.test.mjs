@@ -1,4 +1,4 @@
-// Contract + dry-run tests for pypi-publish.yml: the real `run:` scripts under
+// Contract + dry-run tests for the pypi-publish composite action: the real `run:` scripts under
 // bash with a fake `curl` on PATH (no network), and a real python3 (>=3.11).
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,20 +10,23 @@ import { fileURLToPath } from "node:url";
 import { parseDocument } from "../scripts/vendor/yaml.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const wf = parseDocument(fs.readFileSync(path.join(here, "..", ".github", "workflows", "pypi-publish.yml"), "utf8")).toJS();
-const steps = wf.jobs.publish.steps;
+const wf = parseDocument(fs.readFileSync(path.join(here, "..", ".github", "actions", "pypi-publish", "action.yml"), "utf8")).toJS();
+const steps = wf.runs.steps;
 const step = (prefix) => steps.find((s) => (s.name ?? "").startsWith(prefix));
 
-test("workflow contract: inputs, outputs, no permissions, no concurrency", () => {
-  const i = wf.on.workflow_call.inputs;
+test("action contract: composite, inputs, outputs, run steps are bash in working-directory", () => {
+  assert.equal(wf.runs.using, "composite");
+  const i = wf.inputs;
   assert.deepEqual(Object.keys(i).sort(), ["build-command", "create-release", "gate-commands", "package-name", "python-version", "verify-interval", "verify-timeout", "working-directory"]);
   assert.equal(i["python-version"].default, "3.12");
   assert.equal(i["build-command"].default, "python -m build");
-  assert.deepEqual(Object.keys(wf.on.workflow_call.outputs).sort(), ["published", "version"]);
-  assert.equal(wf.jobs.publish.permissions, undefined);
-  assert.equal("concurrency" in wf, false);
-  assert.equal("concurrency" in wf.jobs.publish, false);
-  assert.equal(wf.on.workflow_call.secrets, undefined, "trusted publishing needs no secrets");
+  assert.equal(i["create-release"].default, "true");
+  assert.deepEqual(Object.keys(wf.outputs).sort(), ["published", "version"]);
+  assert.ok(!steps.some((s) => (s.uses ?? "").startsWith("actions/checkout")), "the caller checks out");
+  for (const s of steps.filter((x) => x.run)) {
+    assert.equal(s.shell, "bash", s.name);
+    assert.equal(s["working-directory"], "${{ inputs.working-directory }}", s.name);
+  }
 });
 
 test("step order: check -> gate -> build -> publish -> verify -> tag/release, all gated on the PyPI check", () => {
@@ -37,7 +40,7 @@ test("step order: check -> gate -> build -> publish -> verify -> tag/release, al
   const rel = step("Tag and GitHub Release");
   assert.equal(rel.uses, "johnhenry/workflows/.github/actions/create-release@v1");
   assert.match(rel.with["tag-prefix"], /-v$/);
-  assert.match(rel.if, /inputs\.create-release/);
+  assert.match(rel.if, /inputs\.create-release == 'true'/);
 });
 
 function sandbox({ pyproject, codes }) {

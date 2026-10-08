@@ -1,0 +1,178 @@
+name: pypi-publish
+description: >-
+  PyPI publish for the family's "main is the release branch" model, as a
+  COMPOSITE action that runs inside the caller's own job. PyPI trusted
+  publishing validates the OIDC token's job_workflow_ref (repository +
+  workflow filename). A reusable workflow from another repository makes
+  job_workflow_ref point at johnhenry/workflows, which PyPI rejects as
+  invalid-publisher; inside the caller's job it is the caller's own file.
+  Steps: version pre-flight (no-op when already on PyPI), gate, build,
+  publish with pypa/gh-action-pypi-publish, verify, then tag
+  <package-name>-v<version> plus a GitHub Release. The caller runs
+  actions/checkout first and grants contents write and id-token write.
+
+inputs:
+  working-directory:
+    description: Directory containing the pyproject.toml to publish.
+    required: false
+    default: "."
+  python-version:
+    description: Python version for the gate and build. Must be 3.11+ (pyproject.toml is read with tomllib).
+    required: false
+    default: "3.12"
+  package-name:
+    description: PyPI distribution name, and the tag prefix (tag is <package-name>-v<version>). Defaults to [project].name from pyproject.toml.
+    required: false
+    default: ""
+  build-command:
+    description: Command that builds the sdist + wheel into ./dist (relative to working-directory).
+    required: false
+    default: "python -m build"
+  gate-commands:
+    description: >-
+      Newline-separated commands that must all succeed before building
+      (install test deps, run tests, etc). Runs in working-directory as one
+      bash script with -e/-o pipefail. Skipped when the version is already on
+      PyPI. Empty (default) means no gate.
+    required: false
+    default: ""
+  create-release:
+    description: >-
+      After a verified publish, create the tag <package-name>-v<version> and a
+      GitHub Release. Needs contents write on the caller's job; without it the
+      step skips with a warning. "true" or "false".
+    required: false
+    default: "true"
+  verify-timeout:
+    description: Minutes to poll PyPI's JSON API for the just-published version before failing.
+    required: false
+    default: "10"
+  verify-interval:
+    description: Seconds between PyPI polls during verification.
+    required: false
+    default: "20"
+
+outputs:
+  published:
+    description: '"true" if this run published a new version to PyPI, otherwise "false".'
+    value: ${{ steps.check.outputs.exists == 'false' && 'true' || 'false' }}
+  version:
+    description: The version in pyproject.toml at the commit that ran.
+    value: ${{ steps.meta.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Read name and version from pyproject.toml
+      id: meta
+      env:
+        INPUT_NAME: ${{ inputs.package-name }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        python - <<'PY' >> "$GITHUB_OUTPUT"
+        import os, sys, tomllib
+        with open("pyproject.toml", "rb") as f:
+            project = tomllib.load(f).get("project", {})
+        version = project.get("version")
+        if not version:
+            sys.exit("::error title=No static version::pyproject.toml has no [project].version (dynamic versions are not supported by pypi-publish.yml)")
+        name = os.environ.get("INPUT_NAME") or project.get("name")
+        if not name:
+            sys.exit("::error title=No package name::set the package-name input or [project].name in pyproject.toml")
+        print(f"name={name}")
+        print(f"version={version}")
+        PY
+
+    - name: Check whether this version is already on PyPI
+      id: check
+      env:
+        PKG_NAME: ${{ steps.meta.outputs.name }}
+        PKG_VERSION: ${{ steps.meta.outputs.version }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        URL="https://pypi.org/pypi/${PKG_NAME}/${PKG_VERSION}/json"
+        CODE=000
+        for attempt in 1 2 3; do
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL" || true)
+          case "$CODE" in 200|404) break ;; esac
+          sleep $((attempt * 5))
+        done
+        case "$CODE" in
+          200)
+            echo "::notice title=Already published::$PKG_NAME $PKG_VERSION is already on PyPI; nothing to do."
+            echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+          404)
+            echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+          *)
+            echo "::error title=PyPI lookup failed::$URL returned HTTP $CODE"
+            exit 1 ;;
+        esac
+
+    - name: Gate
+      if: steps.check.outputs.exists == 'false' && inputs.gate-commands != ''
+      env:
+        GATE_COMMANDS: ${{ inputs.gate-commands }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -eo pipefail
+        bash -e -o pipefail -c "$GATE_COMMANDS"
+
+    - name: Build
+      if: steps.check.outputs.exists == 'false'
+      env:
+        BUILD_COMMAND: ${{ inputs.build-command }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        python -m pip install --upgrade build
+        bash -e -o pipefail -c "$BUILD_COMMAND"
+        ls -l dist
+
+    - name: Publish to PyPI (trusted publishing)
+      if: steps.check.outputs.exists == 'false'
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: ${{ inputs.working-directory }}/dist
+        skip-existing: true
+
+    - name: Verify the version reached PyPI
+      if: steps.check.outputs.exists == 'false'
+      env:
+        PKG_NAME: ${{ steps.meta.outputs.name }}
+        PKG_VERSION: ${{ steps.meta.outputs.version }}
+        TIMEOUT_MIN: ${{ inputs.verify-timeout }}
+        INTERVAL: ${{ inputs.verify-interval }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        URL="https://pypi.org/pypi/${PKG_NAME}/${PKG_VERSION}/json"
+        DEADLINE=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
+        while true; do
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL" || true)
+          if [ "$CODE" = "200" ]; then
+            echo "::notice title=Verified::$PKG_NAME $PKG_VERSION is visible on PyPI."
+            exit 0
+          fi
+          if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+            echo "::error title=Not on PyPI::$PKG_NAME $PKG_VERSION did not appear at $URL within ${TIMEOUT_MIN} minute(s) (last HTTP $CODE). The upload may have been dropped; re-run the workflow."
+            exit 1
+          fi
+          echo "waiting for $PKG_NAME $PKG_VERSION on PyPI (HTTP $CODE)..."
+          sleep "$INTERVAL"
+        done
+
+    - name: Tag and GitHub Release (by-product)
+      if: steps.check.outputs.exists == 'false' && inputs.create-release == 'true'
+      uses: johnhenry/workflows/.github/actions/create-release@v1
+      with:
+        version: ${{ steps.meta.outputs.version }}
+        tag-prefix: ${{ steps.meta.outputs.name }}-v
+        notes: auto
+        working-directory: ${{ inputs.working-directory }}

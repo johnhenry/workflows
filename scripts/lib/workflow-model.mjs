@@ -6,6 +6,7 @@ import { parseDocument, LineCounter, isMap, isSeq, isScalar } from "../vendor/ya
 
 export const REUSABLE_RE = /^johnhenry\/workflows\/\.github\/workflows\/npm-publish\.ya?ml@/;
 export const PYPI_REUSABLE_RE = /^johnhenry\/workflows\/\.github\/workflows\/pypi-publish\.ya?ml@/;
+export const PYPI_COMPOSITE_RE = /^johnhenry\/workflows\/\.github\/actions\/pypi-publish@/;
 export const PYPI_ACTION_RE = /^pypa\/gh-action-pypi-publish(@|$)/;
 export const PUBLISH_RUN_RE =
   /\bnpm\s+publish\b|\bchangeset\s+publish\b|\bnpm\s+run\s+release\b|\b(?:yarn|pnpm)\s+publish\b/;
@@ -110,7 +111,8 @@ export function jobsOf(wf) {
         (typeof s.run === "string" && PUBLISH_RUN_RE.test(s.run)),
     );
     const pypiReusable = typeof uses === "string" && PYPI_REUSABLE_RE.test(uses);
-    const pypi = pypiReusable || stepFacts.some((s) => typeof s.uses === "string" && PYPI_ACTION_RE.test(s.uses));
+    const pypiComposite = stepFacts.some((s) => typeof s.uses === "string" && PYPI_COMPOSITE_RE.test(s.uses));
+    const pypi = pypiReusable || pypiComposite || stepFacts.some((s) => typeof s.uses === "string" && PYPI_ACTION_RE.test(s.uses));
     const npmPublish = reusable || inlinePublish;
     return {
       id: String(pair.key.value),
@@ -123,6 +125,7 @@ export function jobsOf(wf) {
       usesChangesets: stepFacts.some((s) => typeof s.uses === "string" && /^changesets\/action(@|$)/.test(s.uses)),
       pypi,
       pypiReusable,
+      pypiComposite,
       npmPublish,
       isPublish: npmPublish || pypi,
     };

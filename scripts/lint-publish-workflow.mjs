@@ -154,8 +154,8 @@ export function lintWorkflow({ text, engineMajor = null }) {
     if (job.usesChangesets && perms.level("pull-requests") !== "write") {
       add(permLine(), "permissions-pull-requests", `job \`${job.id}\` uses changesets/action and needs \`permissions: pull-requests: write\` to open the "Version Packages" PR (and the repo setting Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests" must be enabled: \`gh api -X PUT repos/<owner>/<repo>/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true\`)`);
     }
-    if (job.pypiReusable && perms.level("contents") !== "write") {
-      add(permLine(), "permissions-contents-write", `job \`${job.id}\` calls pypi-publish.yml and needs \`permissions: contents: write\` so it can create the <package>-v<version> tag and GitHub Release`);
+    if ((job.pypiReusable || job.pypiComposite) && perms.level("contents") !== "write") {
+      add(permLine(), "permissions-contents-write", `job \`${job.id}\` uses the pypi-publish action (or pypi-publish.yml) and needs \`permissions: contents: write\` so it can create the <package>-v<version> tag and GitHub Release`);
     }
     if (job.reusable) {
       if (perms.level("contents") !== "write") {

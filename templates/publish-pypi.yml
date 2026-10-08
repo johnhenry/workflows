@@ -18,16 +18,21 @@ concurrency:
 
 jobs:
   publish:
+    runs-on: ubuntu-latest
     permissions:
-      contents: write # tag + GitHub Release by-product of pypi-publish.yml
+      contents: write # tag + GitHub Release by-product
       id-token: write # PyPI trusted publishing (OIDC)
-    uses: johnhenry/workflows/.github/workflows/pypi-publish.yml@v1
-    with:
-      package-name: my-package # PyPI name; also the tag prefix (my-package-vX.Y.Z)
-      gate-commands: |
-        pip install pytest -e .
-        python -m pytest
-      # working-directory: packages/py   # pyproject.toml lives in a subdirectory
-      # python-version: "3.12"           # must be 3.11+
-      # build-command: python -m build
-      # create-release: false            # skip the tag + GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+      # A composite action runs inside THIS job, so PyPI sees this file as
+      # job_workflow_ref (a reusable workflow from another repo is rejected).
+      - uses: johnhenry/workflows/.github/actions/pypi-publish@v1
+        with:
+          package-name: my-package # PyPI name; also the tag prefix (my-package-vX.Y.Z)
+          gate-commands: |
+            pip install pytest -e .
+            python -m pytest
+          # working-directory: packages/py   # pyproject.toml lives in a subdirectory
+          # python-version: "3.12"           # must be 3.11+
+          # build-command: python -m build
+          # create-release: "false"          # skip the tag + GitHub Release
