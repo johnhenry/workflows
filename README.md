@@ -11,6 +11,10 @@ tooling that keep ~47 consumer repos on one publish model.
 - `.github/actions/create-release/action.yml` -- composite action: the
   `v<version>` tag + GitHub Release by-product, for inline publish jobs
   (`npm-publish.yml` uses it too, so there is one implementation).
+- `.github/actions/verify-published/action.yml` -- composite action: polls the
+  registry until the just-published versions are visible, fails with a table
+  otherwise (`npm-publish.yml` uses it; Changesets repos use
+  `from-workspaces: true`). See "Verification".
 - `.github/workflows/workflow-lint.yml` -- fails a repo's CI when its
   publish workflow drifts from the model below.
 - `.github/workflows/ci.yml` -- the family's test workflow: concurrency
@@ -147,6 +151,15 @@ filename**. Consequences:
   unless it collides, then it is suffixed and the summary says so).
 - The linter prints an INFO line listing the publish workflow filenames it
   checked, so a rename shows up in PR logs.
+- **Trusted publishing cannot create a brand-new package name.** npm only lets
+  you configure a trusted publisher on a package that already exists, so the
+  *first* publish of a new name must use a granular token that may create
+  packages (`NPM_TOKEN`), or a manual `npm publish --access public` with 2FA;
+  only then can you run `npm trust github ...` for it (seen on
+  `@johnhenry/objectify`, [objectify#9](https://github.com/johnhenry/objectify/issues/9)).
+  When `npm publish` fails with `E404` and the name does not exist on the
+  registry, `npm-publish.yml` prints this guidance as an error annotation
+  (`First publish of a new package name`) before failing the job.
 
 Docs of record live in the fleet's `johnhenry/ecosystem` repo
 (github.com/johnhenry/ecosystem, PR #9): `npm-tokens/README.md` ("Publishing:
@@ -197,7 +210,7 @@ changeset publish"`), which publishes each package whose version is new
 (already-published versions are skipped, so re-runs are safe). The action
 pushes a git tag and creates a GitHub Release **per published package**
 (`createGithubReleases` defaults to true) -- the same by-product as Flow A,
-supplied natively, so no extra step is needed; it requires the workflow-level
+supplied natively, so no extra tag step is needed (add the `verify-published` step the template ends with; see "Verification"); it requires the workflow-level
 `contents: write`. This is the shape `johnhenry/math` and `johnhenry/laya-js`
 already use, minus their repo-specific extras (math's JSR job, laya's macOS
 native-package job and `dry_run` input) which stay as additional jobs in those
@@ -216,6 +229,8 @@ Use the template above. Inputs (all optional):
 | `gate-commands` | `"npm test"` | Newline-separated commands that must all pass before publish runs. |
 | `create-release` | `true` | After a successful publish, create tag `v<version>` + a GitHub Release. Needs the caller's `contents: write`; otherwise skips with a warning. |
 | `release-notes` | `"auto"` | `"auto"` = `gh release create --generate-notes`; `"none"` = a one-line body linking the npm page. |
+| `verify-timeout` | `"10"` | Minutes to poll the registry for the just-published version before failing (see "Verification"). |
+| `verify-interval` | `"20"` | Seconds between registry polls. |
 
 Outputs (use with `needs.publish.outputs.*`):
 
@@ -224,7 +239,8 @@ Outputs (use with `needs.publish.outputs.*`):
 | `published` | `"true"` if this run published a new version, else `"false"`. |
 | `version` | The `package.json` version at the commit that ran. |
 
-The tag/release step skips cleanly (success, with a notice or warning) when:
+After publishing, the job verifies the version actually reached the registry
+(see "Verification") and only then runs the tag/release step, which skips cleanly (success, with a notice or warning) when:
 the version was already on the registry (nothing published), the tag
 `v<version>` already exists, the caller lacks `contents: write`, or the run is
 a `workflow_dispatch` from a non-default branch. Pre-release versions
@@ -294,6 +310,60 @@ that does. `scripts/convert-publish.mjs` inserts an `npm view` probe step
 guards the action with
 `steps.release-probe.outputs.new == 'true' && steps.<publish>.outcome == 'success'`.
 
+## Verification -- confirm the registry really has it
+
+`npm publish` and `changeset publish` have logged `+ pkg@x.y.z` and exited
+green while the registry never stored the version (aimatey-wrapper 0.2.0 on
+2026-10-07; `@johnhenry/objectify` 0.0.2 on 2026-10-08; both fixed by
+re-dispatching). Every publish path therefore verifies after publishing, by
+polling `npm view <name>@<version> version`.
+
+- **`npm-publish.yml`** does it itself: after a real publish (not on a no-op
+  run) it polls for `verify-timeout` minutes (default 10) every
+  `verify-interval` seconds (default 20) and fails the job if the version never
+  appears. The tag + GitHub Release by-product runs *after* verification, so a
+  dropped publish never gets a tag or Release.
+- **Inline and Changesets jobs** use the composite action
+  `johnhenry/workflows/.github/actions/verify-published@v1` (dependency-free,
+  needs only Node on the runner):
+
+```yaml
+      - name: Version PR or publish
+        id: changesets
+        uses: changesets/action@v1
+        # ...
+      - name: Verify published versions are on the registry
+        if: steps.changesets.outputs.published == 'true'
+        uses: johnhenry/workflows/.github/actions/verify-published@v1
+        with:
+          from-workspaces: true      # every non-private workspace package.json
+          # or an explicit list:
+          # packages: |
+          #   @scope/a@1.2.3
+          #   @scope/b@0.4.0
+```
+
+| Input | Default | Purpose |
+|---|---|---|
+| `packages` | `""` | Newline-separated `name@version` list. |
+| `from-workspaces` | `"false"` | Also verify every non-private package in the root `workspaces` (globs and literal paths), at the version in its `package.json`. |
+| `timeout-minutes` | `"10"` | How long to keep polling. |
+| `interval-seconds` | `"20"` | Seconds between polls. |
+| `working-directory` | `"."` | Repo root used to resolve workspaces. |
+
+On failure it prints a table (`PACKAGE  VERSION  STATUS`, `MISSING` for the
+ones that never appeared), emits an error annotation per missing version, and
+fails. Re-dispatch the publish workflow to retry: already-published versions
+are skipped. Giving it nothing to verify is an error (exit 2), so a
+misconfigured step cannot pass silently. Guard the Changesets step with
+`steps.<id>.outputs.published == 'true'` so it only runs after a real publish
+(on Version-PR runs the workspace versions are the old, already-published
+ones). Because `changesets/action` creates its own tags/Releases, verification
+there is a failing check, not a gate on them.
+
+`workflow-lint` warns (without failing) when a publish job has no verification
+step; see the `verify-published` rule below.
+
 ## `workflow-lint.yml` -- keep a repo on the model
 
 Add one job to the repo's `ci.yml` (no inputs required):
@@ -325,6 +395,12 @@ workflow that calls `npm-publish.yml`, runs `npm publish`, or uses
 | `node-matches-engines` | a pinned `node-version` major differs from `engines.node` (root; for monorepos with no root `engines`, the highest workspace floor) |
 | `secrets-inherit` | a job calling `npm-publish.yml` lacks `secrets: inherit` |
 | `concurrency-group-unique` | two publish workflows in the repo use the same `concurrency.group` (the finding names both files) |
+
+Warnings (printed as `WARN [rule]` / `::warning`, they never fail the run):
+
+| Rule | Warns when |
+|---|---|
+| `verify-published` | an inline or Changesets publish job has no `verify-published` step (jobs that call `npm-publish.yml` are exempt: it verifies by itself) |
 
 Workflows are selected by **content**, not filename: only files whose jobs call
 `npm-publish.yml`, run `npm publish` / `changeset publish` / `npm run release`

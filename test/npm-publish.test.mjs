@@ -16,7 +16,7 @@ const steps = wf.jobs.publish.steps;
 const stepScript = (name) => steps.find((s) => s.name === name).run;
 const PUBLISH = stepScript("Publish (idempotent)");
 
-function sandbox({ version = "1.2.3", name = "@johnhenry/pkg" } = {}) {
+function sandbox({ version = "1.2.3", name = "@johnhenry/pkg", npmBody } = {}) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "np-"));
   const bin = path.join(d, "bin");
   fs.mkdirSync(bin);
@@ -24,7 +24,7 @@ function sandbox({ version = "1.2.3", name = "@johnhenry/pkg" } = {}) {
   const fake = (n, body) => {
     fs.writeFileSync(path.join(bin, n), `#!/usr/bin/env bash\necho "${n} $*" >> "$CALLS"\n${body}\n`, { mode: 0o755 });
   };
-  fake("npm", 'if [ "$1" = view ]; then [ "$FAKE_NPM_HAS_VERSION" = 1 ]; exit $?; fi; exit 0');
+  fake("npm", npmBody ?? 'if [ "$1" = view ]; then [ "$FAKE_NPM_HAS_VERSION" = 1 ]; exit $?; fi; exit 0');
   fake("git", 'if [ "$1" = ls-remote ]; then [ "$FAKE_TAG_EXISTS" = 1 ] && echo "abc123\trefs/tags/$3"; exit 0; fi; exit 0');
   fake("gh", 'case "$FAKE_GH" in forbidden) echo "HTTP 403: Resource not accessible by integration" >&2; exit 1;; exists) echo "HTTP 422: tag_name already exists" >&2; exit 1;; boom) echo "HTTP 500: kaboom" >&2; exit 1;; *) echo "https://github.com/o/r/releases/tag/x"; exit 0;; esac');
   const out = path.join(d, "out");
@@ -60,7 +60,7 @@ test("publish: version already on the registry is a clean skip (exit 0, publishe
 
 test("workflow contract: inputs, outputs, gating, no job-level permissions", () => {
   const i = wf.on.workflow_call.inputs;
-  assert.deepEqual(Object.keys(i).sort(), ["create-release", "gate-commands", "install-command", "node-cache", "node-version", "release-notes", "working-directory"]);
+  assert.deepEqual(Object.keys(i).sort(), ["create-release", "gate-commands", "install-command", "node-cache", "node-version", "release-notes", "verify-interval", "verify-timeout", "working-directory"]);
   assert.equal(i["create-release"].default, true);
   assert.equal(i["create-release"].type, "boolean");
   assert.equal(i["release-notes"].default, "auto");
@@ -79,4 +79,45 @@ test("workflow contract: inputs, outputs, gating, no job-level permissions", () 
 test("npm-publish.yml declares no concurrency block (same-group deadlock invariant)", () => {
   assert.equal("concurrency" in wf, false);
   for (const job of Object.values(wf.jobs)) assert.equal("concurrency" in job, false);
+});
+
+test("verification runs after publish and before the tag/release by-product", () => {
+  const names = steps.map((s) => s.name ?? s.uses);
+  const iPub = steps.findIndex((s) => s.id === "publish");
+  const iVer = steps.findIndex((s) => s.uses === "johnhenry/workflows/.github/actions/verify-published@v1");
+  const iRel = steps.findIndex((s) => s.name?.startsWith("Tag and GitHub Release"));
+  assert.ok(iVer > iPub && iVer < iRel, names.join(" | "));
+  const v = steps[iVer];
+  assert.match(v.if, /published == 'true'/);
+  assert.equal(v.with.packages, "${{ steps.publish.outputs.name }}@${{ steps.publish.outputs.version }}");
+  assert.equal(v.with["timeout-minutes"], "${{ inputs.verify-timeout }}");
+  assert.equal(v.with["interval-seconds"], "${{ inputs.verify-interval }}");
+  const i = wf.on.workflow_call.inputs;
+  assert.equal(i["verify-timeout"].default, "10");
+  assert.equal(i["verify-interval"].default, "20");
+  assert.equal(i["verify-timeout"].type, "string");
+});
+
+test("publish: E404 on a name that does not exist on the registry prints first-publish guidance and still fails", () => {
+  const s = sandbox({ npmBody: 'if [ "$1" = view ]; then echo "npm error code E404" >&2; exit 1; fi; if [ "$1" = publish ]; then echo "npm error code E404" >&2; exit 1; fi; exit 0' });
+  const r = s.run(PUBLISH);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stdout + r.stderr, /::error title=First publish of a new package name/);
+  assert.match(r.stdout + r.stderr, /trusted publishing cannot create/i);
+  assert.match(r.stdout + r.stderr, /objectify\/issues\/9/);
+  assert.equal(r.outputs.published, undefined);
+});
+
+test("publish: E404 on a name that DOES exist (e.g. missing scope access) is not mislabelled as first publish", () => {
+  const s = sandbox({ npmBody: 'if [ "$1" = view ]; then if [[ "$2" == *@*.*.* ]]; then exit 1; fi; echo "@johnhenry/pkg"; exit 0; fi; if [ "$1" = publish ]; then echo "npm error code E404" >&2; exit 1; fi; exit 0' });
+  const r = s.run(PUBLISH);
+  assert.notEqual(r.status, 0);
+  assert.doesNotMatch(r.stdout + r.stderr, /First publish of a new package name/);
+});
+
+test("publish: a non-E404 publish failure fails without first-publish guidance", () => {
+  const s = sandbox({ npmBody: 'if [ "$1" = view ]; then exit 1; fi; if [ "$1" = publish ]; then echo "npm error code EOTP" >&2; exit 1; fi; exit 0' });
+  const r = s.run(PUBLISH);
+  assert.notEqual(r.status, 0);
+  assert.doesNotMatch(r.stdout + r.stderr, /First publish of a new package name/);
 });

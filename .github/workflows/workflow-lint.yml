@@ -10,6 +10,8 @@ name: workflow-lint (reusable)
 #     `contents: write` when it calls npm-publish.yml
 #   - `node-version` major == the repo's `engines.node` major
 #   - `secrets: inherit` on jobs calling npm-publish.yml
+# plus a WARNING (never fails) when an inline/Changesets publish job has no
+# post-publish `verify-published` step.
 #
 # Wire it into the caller's CI (one job, no inputs needed):
 #   jobs:
