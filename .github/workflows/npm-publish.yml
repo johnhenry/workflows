@@ -106,9 +106,12 @@ on:
     secrets:
       NPM_TOKEN:
         description: >-
-          npm token with publish rights for the target scope. Pass with
-          `secrets: inherit` at the call site (simplest) or explicitly.
-        required: true
+          Optional. npm token with publish rights for the target scope; when
+          present it is used exactly as before. Omit it (no NPM_TOKEN secret
+          in the caller repo) to publish through npm trusted publishing
+          (GitHub OIDC) alone. Pass with `secrets: inherit` at the call site
+          (simplest) or explicitly.
+        required: false
 
     outputs:
       published:
@@ -147,6 +150,23 @@ jobs:
       - name: Gate
         run: ${{ inputs.gate-commands }}
 
+      - name: Ensure npm supports trusted publishing (OIDC-only mode)
+        # Only when no NPM_TOKEN was provided: OIDC trusted publishing needs
+        # npm >= 11.5.1. Token-holding callers skip this and behave as before.
+        run: |
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN provided; leaving npm as bundled."
+            exit 0
+          fi
+          have=$(npm --version)
+          if [ "$(printf '%s\n11.5.1\n' "$have" | sort -V | head -n1)" != "11.5.1" ]; then
+            echo "npm $have is older than 11.5.1; upgrading for trusted publishing"
+            npm install -g npm@latest
+          fi
+          npm --version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish (idempotent)
         id: publish
         # Pre-flight `npm view` guard: ask the registry whether this exact
@@ -163,6 +183,16 @@ jobs:
             echo "::notice title=Already published::$PKG_NAME@$PKG_VERSION is already on npm; nothing to do."
             echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            # No NPM_TOKEN: use npm trusted publishing (OIDC). setup-node's
+            # .npmrc would send its placeholder/blank token as a bearer token
+            # instead, so publish with a clean user config and no token var.
+            echo "::notice title=Trusted publishing::No NPM_TOKEN provided; publishing via npm OIDC trusted publishing."
+            unset NODE_AUTH_TOKEN
+            NPM_CONFIG_USERCONFIG=$(mktemp)
+            echo "registry=https://registry.npmjs.org/" > "$NPM_CONFIG_USERCONFIG"
+            export NPM_CONFIG_USERCONFIG
           fi
           set +e
           npm publish --provenance --access public 2>&1 | tee "${RUNNER_TEMP:-/tmp}/npm-publish.log"

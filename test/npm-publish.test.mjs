@@ -73,7 +73,16 @@ test("workflow contract: inputs, outputs, gating, no job-level permissions", () 
   assert.equal(rel.uses, "johnhenry/workflows/.github/actions/create-release@v1", "one implementation: the by-product step is the composite action");
   assert.equal(rel.run, undefined);
   assert.equal(rel.with.notes, "${{ inputs.release-notes }}");
-  assert.ok(wf.on.workflow_call.secrets.NPM_TOKEN.required);
+  assert.equal(wf.on.workflow_call.secrets.NPM_TOKEN.required, false, "NPM_TOKEN optional: OIDC-only callers have no secret");
+  const pub = steps.find((s) => s.id === "publish");
+  assert.equal(pub.env.NODE_AUTH_TOKEN, "${{ secrets.NPM_TOKEN }}", "token path unchanged");
+  assert.match(pub.run, /-z "\$\{NODE_AUTH_TOKEN:-\}"/);
+  assert.match(pub.run, /unset NODE_AUTH_TOKEN/);
+  assert.match(pub.run, /npm publish --provenance --access public/);
+  const npmStep = steps.find((s) => s.name?.startsWith("Ensure npm supports trusted publishing"));
+  assert.match(npmStep.run, /11\.5\.1/);
+  assert.equal(npmStep.if, undefined, "step-level env is invisible to step if; the script checks the token");
+  assert.match(npmStep.run, /-n "\$\{NODE_AUTH_TOKEN:-\}"/);
 });
 
 test("npm-publish.yml declares no concurrency block (same-group deadlock invariant)", () => {

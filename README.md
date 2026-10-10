@@ -143,8 +143,17 @@ filename**. Consequences:
   file, not `npm-publish.yml` (canvas-fx 0.0.1 published via OIDC this way;
   its `_npmUser` is "GitHub Actions").
 - npm prefers OIDC even when `NODE_AUTH_TOKEN` is set. Keep passing the token
-  (`secrets: inherit`) as a fallback for now; the `NPM_TOKEN` secrets have not
-  been removed. `--provenance` stays standard.
+  (`secrets: inherit`) as a fallback where the secret exists; the `NPM_TOKEN`
+  secrets have not been removed. `--provenance` stays standard.
+- **Trusted-publishing-only repos (no `NPM_TOKEN` secret) work since v1.6.0.**
+  `NPM_TOKEN` is an optional secret of `npm-publish.yml`. When it is empty the
+  job makes sure npm is >= 11.5.1 (the minimum for OIDC trusted publishing;
+  it upgrades npm only if the bundled one is older), and publishes with a clean
+  npm user config and `NODE_AUTH_TOKEN` unset, so npm exchanges the GitHub OIDC
+  token instead of sending setup-node's placeholder token. Callers with a token
+  behave exactly as before. Keep `secrets: inherit` and `id-token: write` in
+  the caller either way. The package must already exist and have a trusted
+  publisher configured for the caller's workflow filename.
 - Caller-level `concurrency: { group: publish-${{ github.ref }},
   cancel-in-progress: false }` is the standard. The reusable workflow must
   **never** declare a `concurrency` block: the same group at two levels
@@ -256,8 +265,9 @@ a `workflow_dispatch` from a non-default branch. Pre-release versions
 (`1.0.0-rc.1`) are flagged as pre-releases. Any *other* `gh` failure fails the
 step, loudly -- the package is already on npm by then, so re-run to retry.
 
-`secrets: inherit` passes the caller repo's `NPM_TOKEN` through automatically
-and is required by the linter.
+`secrets: inherit` passes the caller repo's `NPM_TOKEN` (if it has one)
+through automatically and is required by the linter. The secret is optional:
+repos publishing only via trusted publishing need no `NPM_TOKEN` at all.
 
 This workflow does **not** do monorepo dependency-ordered publishing; use Flow B.
 
