@@ -76,12 +76,22 @@ on:
         default: "npm test"
       create-release:
         description: >-
-          After a successful publish, create the git tag v<version> and a
-          GitHub Release for it. Needs the caller's job to grant
-          `contents: write`; without it the step skips with a warning.
+          After a successful publish, create the git tag <tag-prefix><version>
+          (v<version> by default) and a GitHub Release for it. Needs the
+          caller's job to grant `contents: write`; without it the step skips
+          with a warning.
         required: false
         type: boolean
         default: true
+      tag-prefix:
+        description: >-
+          Prefix for the by-product git tag: the tag is <tag-prefix><version>.
+          Defaults to "v". Set it when `v<version>` tags are already taken,
+          e.g. a package renamed to a new scope that restarted its version
+          line ("@scope/name@" gives tags like @scope/name@1.2.3).
+        required: false
+        type: string
+        default: "v"
       release-notes:
         description: >-
           "auto" (default) generates release notes from merged PRs
@@ -247,5 +257,6 @@ jobs:
         with:
           version: ${{ steps.publish.outputs.version }}
           notes: ${{ inputs.release-notes }}
+          tag-prefix: ${{ inputs.tag-prefix }}
           package-name: ${{ steps.publish.outputs.name }}
           working-directory: ${{ inputs.working-directory }}
