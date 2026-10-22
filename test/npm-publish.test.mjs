@@ -60,8 +60,11 @@ test("publish: version already on the registry is a clean skip (exit 0, publishe
 
 test("workflow contract: inputs, outputs, gating, no job-level permissions", () => {
   const i = wf.on.workflow_call.inputs;
-  assert.deepEqual(Object.keys(i).sort(), ["create-release", "gate-commands", "install-command", "node-cache", "node-version", "release-notes", "verify-interval", "verify-timeout", "working-directory"]);
+  assert.deepEqual(Object.keys(i).sort(), ["create-release", "gate-commands", "install-command", "node-cache", "node-version", "release-notes", "tag-prefix", "verify-interval", "verify-timeout", "working-directory"]);
   assert.equal(i["create-release"].default, true);
+  assert.equal(i["tag-prefix"].default, "v", "default keeps existing callers on v<version> tags");
+  assert.equal(i["tag-prefix"].type, "string");
+  assert.equal(i["tag-prefix"].required, false);
   assert.equal(i["create-release"].type, "boolean");
   assert.equal(i["release-notes"].default, "auto");
   assert.equal(i["node-version"].default, "26");
@@ -73,6 +76,7 @@ test("workflow contract: inputs, outputs, gating, no job-level permissions", () 
   assert.equal(rel.uses, "johnhenry/workflows/.github/actions/create-release@v1", "one implementation: the by-product step is the composite action");
   assert.equal(rel.run, undefined);
   assert.equal(rel.with.notes, "${{ inputs.release-notes }}");
+  assert.equal(rel.with["tag-prefix"], "${{ inputs.tag-prefix }}", "tag-prefix is passed through to create-release");
   assert.equal(wf.on.workflow_call.secrets.NPM_TOKEN.required, false, "NPM_TOKEN optional: OIDC-only callers have no secret");
   const pub = steps.find((s) => s.id === "publish");
   assert.equal(pub.env.NODE_AUTH_TOKEN, "${{ secrets.NPM_TOKEN }}", "token path unchanged");

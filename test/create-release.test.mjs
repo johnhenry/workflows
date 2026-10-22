@@ -52,6 +52,15 @@ test("release: creates v<version> at the pushed commit with generated notes", ()
   assert.equal(call, "gh release create v1.2.3 --target deadbeef --title v1.2.3 --generate-notes");
 });
 
+test("release: a scoped tag-prefix (renamed package) yields @scope/name@<version>", () => {
+  const r = sandbox().run(RELEASE, relEnv({ TAG_PREFIX: "@johnhenry/pkg@" }));
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.calls.includes("git ls-remote --tags origin refs/tags/@johnhenry/pkg@1.2.3") || r.calls.some((c) => c.startsWith("git ls-remote") && c.includes("@johnhenry/pkg@1.2.3")), "existence check uses the prefixed tag");
+  const call = r.calls.find((c) => c.startsWith("gh "));
+  assert.equal(call, "gh release create @johnhenry/pkg@1.2.3 --target deadbeef --title @johnhenry/pkg@1.2.3 --generate-notes");
+  assert.equal(r.outputs.tag, "@johnhenry/pkg@1.2.3");
+});
+
 test("release: release-notes none writes a one-line body instead", () => {
   const r = sandbox().run(RELEASE, relEnv({ NOTES: "none" }));
   const call = r.calls.find((c) => c.startsWith("gh "));

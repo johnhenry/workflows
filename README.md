@@ -245,7 +245,8 @@ Use the template above. Inputs (all optional):
 | `install-command` | `"npm ci"` | Use `"npm install"` for repos with no committed lockfile. |
 | `node-cache` | `"npm"` | Passed to `actions/setup-node`'s `cache` input; set to `""` for repos with no lockfile (otherwise `setup-node` errors). |
 | `gate-commands` | `"npm test"` | Newline-separated commands that must all pass before publish runs. |
-| `create-release` | `true` | After a successful publish, create tag `v<version>` + a GitHub Release. Needs the caller's `contents: write`; otherwise skips with a warning. |
+| `create-release` | `true` | After a successful publish, create tag `<tag-prefix><version>` (`v<version>` by default) + a GitHub Release. Needs the caller's `contents: write`; otherwise skips with a warning. |
+| `tag-prefix` | `"v"` | Prefix for that tag. Set it when `v<version>` tags are already taken, e.g. after a rename to a new scope that restarted the version line: `tag-prefix: "@scope/name@"` gives `@scope/name@1.2.3`. (Since v1.7.0.) |
 | `release-notes` | `"auto"` | `"auto"` = `gh release create --generate-notes`; `"none"` = a one-line body linking the npm page. |
 | `verify-timeout` | `"10"` | Minutes to poll the registry for the just-published version before failing (see "Verification"). |
 | `verify-interval` | `"20"` | Seconds between registry polls. |
